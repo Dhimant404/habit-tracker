@@ -1068,7 +1068,7 @@ function App({ userId, email }) {
       const id = modal.habit.id;
       const updated = rowToHabit({ ...modal.habit, ...form });
       setHabits((prev) => prev.map((h) => (h.id === id ? updated : h)));
-      updateHabit(id, { name: form.name, type: form.type, levels: form.levels, unit: form.unit, icon: form.icon });
+      updateHabit(id, { name: form.name, type: form.type, levels: form.levels, unit: form.unit, icon: form.icon, color: form.color });
     } else {
       const id = slugify(form.name);
       const sort_order = habits.length ? Math.max(...habits.map((h) => h.sort_order)) + 1 : 0;
