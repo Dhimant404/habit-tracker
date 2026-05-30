@@ -430,7 +430,7 @@ function Heatmap({ habit, data, weeks, onSet }) {
 
   return (
     <div ref={scrollRef} style={{ overflowX: 'auto', paddingBottom: 4 }}>
-      <div style={{ minWidth: GUTTER + 53 * STEP }}>
+      <div style={{ minWidth: GUTTER + weeks.length * STEP }}>
         {/* month header */}
         <div style={{ display: 'flex' }}>
           <div style={{ width: GUTTER, flex: 'none' }} />
