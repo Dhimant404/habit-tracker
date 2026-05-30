@@ -196,18 +196,29 @@ function buildWeeks(today) {
   return weeks;
 }
 
-/* Color scales — green intensity ramp generated for ANY number of levels */
+/* Color scales — original WHOOP-style oklch ramp, parameterized by hue so any
+   palette color renders with the same refined dark->bright gradient. */
 const EMPTY_CELL = 'rgba(255,255,255,0.05)';
 const WORKOUT_GREEN = 'oklch(0.77 0.245 142)';
 
-/* n: 0..levels (0 = empty). Blends light -> the habit's base color across `levels` steps.
-   color-mix works for any palette color without hand-tuned per-hue math. */
+/* Map a stored habit color to its oklch hue (see PALETTE); default to green. */
+function hueOf(color) {
+  const p = (typeof PALETTE !== 'undefined') ? PALETTE.find((x) => x.color === color) : null;
+  return p ? p.hue : 145;
+}
+/* The solid / peak color for a hue — used for binary cells, tab dots, accents. */
+function peakColor(hue) { return `oklch(0.77 0.235 ${hue})`; }
+
+/* n: 0..levels (0 = empty). Reproduces the original LC_SCALE gradient:
+   dark/muted (L 0.42, C 0.11) at level 1 -> bright (L 0.84, C 0.27) at the top. */
 function rampColor(base, levels, n) {
   if ((n | 0) <= 0) return EMPTY_CELL;
-  const maxN = Math.max(1, levels | 0);
-  const t = Math.min(1, (n | 0) / maxN);
-  const pct = Math.round(22 + 78 * t); // 22% (lightest) .. 100% (full color), blended over surface
-  return `color-mix(in oklab, ${base} ${pct}%, var(--surface-1))`;
+  const maxN = Math.max(2, levels | 0);
+  const s = Math.min(1, Math.max(0, (n - 1) / (maxN - 1)));
+  const hue = hueOf(base);
+  const L = (0.42 + 0.42 * s).toFixed(3); // 0.42 -> 0.84
+  const C = (0.11 + 0.16 * s).toFixed(3); // 0.11 -> 0.27
+  return `oklch(${L} ${C} ${hue})`;
 }
 function rampScale(base, levels) {
   const out = [EMPTY_CELL];
@@ -236,7 +247,7 @@ function rowToHabit(r) {
     id: r.id, name: r.name, type: r.type,
     levels: r.levels || (r.type === 'binary' ? 1 : 5),
     unit: r.unit || 'times', icon: r.icon || 'target',
-    color, sort_order: r.sort_order || 0, accent: color,
+    color, sort_order: r.sort_order || 0, accent: peakColor(hueOf(color)),
   };
 }
 function slugify(name) {
@@ -348,7 +359,7 @@ const CELL = 14, GAP = 3, STEP = CELL + GAP;
 function cellColor(habit, entry) {
   const v = entry ? entry.v : 0;
   if (v <= 0) return EMPTY_CELL;
-  if (habit.type === 'binary') return habit.color;
+  if (habit.type === 'binary') return peakColor(hueOf(habit.color));
   return rampColor(habit.color, habit.levels || 5, v);
 }
 function isMax(habit, entry) {
@@ -453,9 +464,9 @@ function Editor({ habit, date, entry, rect, onChange, onClose }) {
             width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9,
             padding: '15px', borderRadius: 12, cursor: 'pointer', transition: 'all .15s',
             fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 14, letterSpacing: '.08em', textTransform: 'uppercase',
-            background: v ? habit.color : 'transparent', color: v ? '#04261a' : 'var(--fg-1)',
+            background: v ? habit.accent : 'transparent', color: v ? '#04261a' : 'var(--fg-1)',
             border: v ? 'none' : '1.5px solid var(--surface-line-strong)',
-            boxShadow: v ? `0 0 18px color-mix(in oklab, ${habit.color} 45%, transparent)` : 'none',
+            boxShadow: v ? `0 0 18px color-mix(in oklab, ${habit.accent} 45%, transparent)` : 'none',
           }}>
             <Icon name={v ? 'check' : habit.icon} size={18} />{v ? 'Done' : `Mark ${habit.name}`}
           </button>
@@ -564,7 +575,7 @@ function Heatmap({ habit, data, weeks, onSet }) {
         {/* legend */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 7, marginTop: 14, paddingRight: 2 }}>
           <span style={{ fontSize: 11, color: 'var(--fg-3)', fontWeight: 600 }}>Less</span>
-          {(habit.type === 'binary' ? [EMPTY_CELL, habit.color] : rampScale(habit.color, habit.levels || 5)).map((c, i) => (
+          {(habit.type === 'binary' ? [EMPTY_CELL, habit.accent] : rampScale(habit.color, habit.levels || 5)).map((c, i) => (
             <span key={i} style={{ width: CELL, height: CELL, borderRadius: 3, background: c, outline: '1px solid rgba(255,255,255,0.045)', outlineOffset: -1 }} />
           ))}
           <span style={{ fontSize: 11, color: 'var(--fg-3)', fontWeight: 600 }}>More</span>
@@ -648,7 +659,7 @@ function StatCard({ label, value, unit, accent = 'var(--fg-1)', footer }) {
 function TrendCard({ habit, stats }) {
   const data = stats.last8;
   const max = Math.max(1, ...data);
-  const accent = habit.color;
+  const accent = habit.accent;
   const labels = ['7w', '6w', '5w', '4w', '3w', '2w', 'Last', 'This'];
   return (
     <Card pad={22} style={{ display: 'flex', flexDirection: 'column' }}>
@@ -680,7 +691,7 @@ function TrendCard({ habit, stats }) {
 /* Stats strip */
 function StatsStrip({ habit, stats }) {
   const mobile = useIsMobile();
-  const accent = habit.color;
+  const accent = habit.accent;
   const avgRounded = habit.type === 'binary' ? stats.avg4.toFixed(1) : Math.round(stats.avg4);
   return (
     <div style={{ display: 'grid', gridTemplateColumns: mobile ? '1fr' : '1.1fr 1fr 1fr 1.6fr', gap: mobile ? 12 : 16, alignItems: 'stretch' }}>
@@ -737,7 +748,7 @@ function DayGlance({ habit, date, entry, future, isToday }) {
 
 function WeekBlock({ habit, label, monday, data, today, total, delta }) {
   const days = weekDates(monday);
-  const accent = habit.color;
+  const accent = habit.accent;
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
@@ -787,19 +798,20 @@ function WeekReport({ habit, data, today }) {
    ============================================================ */
 const ICON_CHOICES = ['dumbbell', 'code', 'flame', 'zap', 'target', 'calendar', 'pencil', 'trending-up', 'heart', 'music', 'coffee', 'droplet', 'moon', 'sun', 'star', 'leaf', 'activity', 'award', 'clock', 'dollar-sign', 'smile', 'book'];
 
-/* Curated color palette — used for the app's primary accent AND per-habit heatmaps */
+/* Curated color palette — `color` is the stored id; `hue` drives the oklch ramp.
+   Used for the app's primary accent AND per-habit heatmaps. */
 const PALETTE = [
-  { name: 'Green',  color: '#16EC06' },
-  { name: 'Teal',   color: '#00F19F' },
-  { name: 'Blue',   color: '#0093E7' },
-  { name: 'Purple', color: '#A855F7' },
-  { name: 'Pink',   color: '#EC4899' },
-  { name: 'Red',    color: '#FF0026' },
-  { name: 'Orange', color: '#FF6B00' },
-  { name: 'Amber',  color: '#FFC400' },
+  { name: 'Green',  color: '#16EC06', hue: 145 },
+  { name: 'Teal',   color: '#00F19F', hue: 168 },
+  { name: 'Blue',   color: '#0093E7', hue: 240 },
+  { name: 'Purple', color: '#A855F7', hue: 300 },
+  { name: 'Pink',   color: '#EC4899', hue: 350 },
+  { name: 'Red',    color: '#FF0026', hue: 25 },
+  { name: 'Orange', color: '#FF6B00', hue: 50 },
+  { name: 'Amber',  color: '#FFC400', hue: 90 },
 ];
 
-/* Swatch row used by both modals */
+/* Swatch row used by both modals — swatches show the actual rendered peak color */
 function ColorPicker({ value, onChange }) {
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -807,7 +819,7 @@ function ColorPicker({ value, onChange }) {
         const on = value === p.color;
         return (
           <button key={p.color} onClick={() => onChange(p.color)} title={p.name}
-            style={{ width: 34, height: 34, borderRadius: 999, cursor: 'pointer', flex: 'none', background: p.color,
+            style={{ width: 34, height: 34, borderRadius: 999, cursor: 'pointer', flex: 'none', background: peakColor(p.hue),
               border: on ? '2px solid #fff' : '2px solid transparent', outline: on ? '2px solid var(--surface-line-strong)' : 'none', outlineOffset: 1 }} />
         );
       })}
@@ -834,7 +846,7 @@ function HabitModal({ initial, onSave, onDelete, onClose }) {
 
   const field = { width: '100%', boxSizing: 'border-box', borderRadius: 10, background: 'var(--surface-0)', border: '1px solid var(--surface-line)', color: 'var(--fg-1)', fontFamily: 'var(--font-sans)', fontSize: 14, padding: '11px 12px', outline: 'none' };
   const lbl = { fontSize: 11, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--fg-3)', display: 'block', marginBottom: 8 };
-  const previewScale = type === 'binary' ? [EMPTY_CELL, color] : rampScale(color, levels);
+  const previewScale = type === 'binary' ? [EMPTY_CELL, peakColor(hueOf(color))] : rampScale(color, levels);
 
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
