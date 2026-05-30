@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Habit Tracker</title>
+
+  <!-- Google Fonts (substitutes for Proxima Nova + DINPro) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300..900;1,300..900&family=Barlow+Semi+Condensed:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <style>
+    /* ============================================================
+       Design tokens — WHOOP design system
+       ============================================================ */
+    :root {
+      --font-sans: 'Figtree', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      --font-num:  'Barlow Semi Condensed', 'Figtree', Helvetica, Arial, sans-serif;
+
+      --whoop-black: #000000;
+      --whoop-white: #FFFFFF;
+
+      --teal:           #00F19F;
+      --strain:         #0093E7;
+      --recovery-high:  #16EC06;
+      --recovery-med:   #FFDE00;
+      --recovery-low:   #FF0026;
+      --sleep:          #7BA1BB;
+      --recovery-blue:  #67AEE6;
+
+      --bg-grad-top:    #283339;
+      --bg-grad-bottom: #101518;
+      --app-bg: radial-gradient(120% 120% at 50% 0%, var(--bg-grad-top) 0%, var(--bg-grad-bottom) 70%);
+
+      --surface-0: #0A0E11;
+      --surface-1: #141A1F;
+      --surface-2: #1E262C;
+      --surface-3: #2A333A;
+      --surface-line: rgba(255, 255, 255, 0.08);
+      --surface-line-strong: rgba(255, 255, 255, 0.16);
+
+      --fg-1: #FFFFFF;
+      --fg-2: rgba(255, 255, 255, 0.62);
+      --fg-3: rgba(255, 255, 255, 0.38);
+      --fg-disabled: rgba(255, 255, 255, 0.22);
+
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --radius-xl: 24px;
+      --radius-pill: 999px;
+
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 24px;
+      --space-6: 32px;
+      --space-7: 48px;
+      --space-8: 64px;
+
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
+      --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.55);
+      --glow-teal: 0 0 24px rgba(0, 241, 159, 0.35);
+    }
+
+    /* Semantic type */
+    .whoop-h1 { font-family: var(--font-sans); font-weight: 800; font-size: 44px; line-height: 1.04; letter-spacing: 0.10em; text-transform: uppercase; color: var(--fg-1); }
+    .whoop-h2 { font-family: var(--font-sans); font-weight: 700; font-size: 30px; line-height: 1.1; letter-spacing: 0.10em; text-transform: uppercase; color: var(--fg-1); }
+    .whoop-h3 { font-family: var(--font-sans); font-weight: 700; font-size: 20px; line-height: 1.15; letter-spacing: 0.10em; text-transform: uppercase; color: var(--fg-1); }
+    .whoop-eyebrow { font-family: var(--font-sans); font-weight: 700; font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--fg-3); }
+    .whoop-b1 { font-family: var(--font-sans); font-weight: 600; font-size: 18px; line-height: 1.5; color: var(--fg-1); }
+    .whoop-b2 { font-family: var(--font-sans); font-weight: 600; font-size: 16px; line-height: 1.5; color: var(--fg-1); }
+    .whoop-b3 { font-family: var(--font-sans); font-weight: 500; font-size: 14px; line-height: 1.45; color: var(--fg-2); }
+    .whoop-b4 { font-family: var(--font-sans); font-weight: 500; font-size: 12px; line-height: 1.4; color: var(--fg-2); }
+    .whoop-num { font-family: var(--font-num); font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.01em; color: var(--fg-1); }
+
+    /* Base */
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      background: var(--app-bg);
+      background-attachment: fixed;
+      min-height: 100vh;
+      font-family: var(--font-sans);
+      color: var(--fg-1);
+      -webkit-font-smoothing: antialiased;
+    }
+    * { box-sizing: border-box; }
+    textarea::placeholder { color: var(--fg-disabled); }
+    ::-webkit-scrollbar { height: 8px; width: 8px; }
+    ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 999px; }
+  </style>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+/* ============================================================
+   LIB — icons, atoms, date + color helpers, demo-data seeding
+   ============================================================ */
+const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect } = React;
+
+/* Icons (Lucide paths, ISC license) */
+const HT_ICONS = {
+  flame:        '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>',
+  code:         '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/>',
+  plus:         '<path d="M5 12h14M12 5v14"/>',
+  minus:        '<path d="M5 12h14"/>',
+  check:        '<path d="M20 6 9 17l-5-5"/>',
+  x:            '<path d="M18 6 6 18M6 6l12 12"/>',
+  'chevron-left':'<path d="m15 18-6-6 6-6"/>',
+  'chevron-right':'<path d="m9 18 6-6-6-6"/>',
+  'trending-up':'<path d="M16 7h6v6"/><path d="m22 7-8.5 8.5-5-5L2 17"/>',
+  'trending-down':'<path d="M16 17h6v-6"/><path d="m22 17-8.5-8.5-5 5L2 7"/>',
+  zap:          '<path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/>',
+  pencil:       '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
+  target:       '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
+  calendar:     '<path d="M8 2v4M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/>',
+  dumbbell:     '<path d="M14.4 14.4 9.6 9.6"/><path d="M18.657 21.485a2 2 0 1 1-2.829-2.828l-1.768 1.767a2 2 0 1 1-2.828-2.828l6.364-6.364a2 2 0 1 1 2.828 2.828l-1.767 1.768a2 2 0 1 1 2.828 2.828z"/><path d="m21.5 21.5-1.4-1.4M3.9 3.9 2.5 2.5"/><path d="M6.404 12.768a2 2 0 1 1 2.829-2.829l6.364 6.364a2 2 0 1 1-2.828 2.829z"/>',
+};
+function Icon({ name, size = 20, color = 'currentColor', stroke = 1.9, style = {} }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke={color} strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round"
+      style={{ display: 'block', flex: 'none', ...style }}
+      dangerouslySetInnerHTML={{ __html: HT_ICONS[name] || '' }} />
+  );
+}
+
+/* Card */
+function Card({ children, style = {}, pad = 22, onClick }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div onClick={onClick}
+      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      style={{
+        background: hover && onClick ? 'var(--surface-2)' : 'var(--surface-1)',
+        border: '1px solid var(--surface-line)', borderRadius: 'var(--radius-lg)',
+        boxShadow: 'var(--shadow-md)', padding: pad, cursor: onClick ? 'pointer' : 'default',
+        transition: 'background .18s', ...style,
+      }}>
+      {children}
+    </div>
+  );
+}
+
+/* Date helpers */
+const DAY_MS = 86400000;
+const pad2 = (n) => String(n).padStart(2, '0');
+function keyOf(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function mondayOf(d) { const x = startOfDay(d); return addDays(x, -((x.getDay() + 6) % 7)); }
+function weekDates(monday) { return [0, 1, 2, 3, 4, 5, 6].map((i) => addDays(monday, i)); }
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function fmtLong(d) { return `${DOW[d.getDay()]}, ${MONTHS[d.getMonth()]} ${d.getDate()}`; }
+
+/* Build 53-week grid ending on the week containing today */
+function buildWeeks(today) {
+  const t = startOfDay(today);
+  const lastSunday = addDays(t, -t.getDay());
+  const firstSunday = addDays(lastSunday, -52 * 7);
+  const weeks = [];
+  for (let w = 0; w < 53; w++) {
+    const col = [];
+    for (let d = 0; d < 7; d++) {
+      const date = addDays(firstSunday, w * 7 + d);
+      col.push(date > t ? null : date);
+    }
+    weeks.push(col);
+  }
+  return weeks;
+}
+
+/* Color scales */
+const EMPTY_CELL = 'rgba(255,255,255,0.05)';
+const LC_SCALE = [
+  EMPTY_CELL,
+  'oklch(0.42 0.11 150)',
+  'oklch(0.54 0.155 147)',
+  'oklch(0.66 0.20 144)',
+  'oklch(0.77 0.245 142)',
+  '#16EC06',
+];
+function lcColor(n) { return LC_SCALE[Math.min(5, Math.max(0, n | 0))]; }
+const WORKOUT_GREEN = 'oklch(0.77 0.245 142)';
+
+/* Demo-data seeding */
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const WORKOUT_NOTES = ['Push day — chest + triceps', 'Leg day, heavy squats', '5k tempo run', 'Upper body + core', 'Yoga & mobility', 'Back & biceps', '30-min HIIT', 'Long run 10k', 'Pool — 1500m', 'Bouldering session', 'Full-body circuit', 'Cycle + abs'];
+const LC_NOTES = ['Two Sum, Valid Anagram', 'DP: house robber', 'Graph BFS / DFS set', 'Binary search practice', 'Sliding window medium', 'Trees — inorder/level', 'Heap: top-K problems', 'Backtracking subsets', 'Greedy interval set', 'Linked-list reversal', 'Trie + word search', 'Two-pointer array set'];
+
+function seedData(weeks) {
+  const workout = {}, leetcode = {};
+  const rw = mulberry32(424242), rl = mulberry32(990017);
+  const flat = weeks.flat().filter(Boolean);
+  const pick = (arr, i) => arr[(i * 7) % arr.length];
+  let wPrev = 0;
+  flat.forEach((date, i) => {
+    const dow = date.getDay();
+    const weekend = dow === 0 || dow === 6;
+    let p = weekend ? 0.34 : 0.56;
+    p += wPrev ? 0.13 : -0.06;
+    const did = rw() < p;
+    wPrev = did ? 1 : 0;
+    if (did) workout[keyOf(date)] = { v: 1, note: rw() < 0.5 ? pick(WORKOUT_NOTES, i) : '' };
+    let n = Math.round((weekend ? 1.1 : 2.7) + (rl() - 0.5) * 3.6);
+    if (n < 0) n = 0; if (n > 7) n = 7;
+    if (rl() < 0.18) n = 0;
+    if (n > 0) leetcode[keyOf(date)] = { v: n, note: rl() < 0.5 ? pick(LC_NOTES, i) : '' };
+  });
+  const wCnt = [0, 1, 1, 1, 1], lCnt = [4, 3, 5, 2, 4];
+  flat.slice(-5).forEach((date, k) => {
+    if (wCnt[k]) workout[keyOf(date)] = { v: 1, note: k % 2 ? '' : WORKOUT_NOTES[k] };
+    leetcode[keyOf(date)] = { v: lCnt[k], note: k % 2 ? '' : LC_NOTES[k] };
+  });
+  return { workout, leetcode };
+}
+
+/* Persistence */
+const STORE_KEY = 'whoop-habit-tracker-v2';
+function loadStore(weeks) {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  const seeded = seedData(weeks);
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(seeded)); } catch (e) {}
+  return seeded;
+}
+function saveStore(data) {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); } catch (e) {}
+}
+
+/* Responsive hook */
+function useIsMobile(bp = 760) {
+  const [m, setM] = useState(typeof window !== 'undefined' && (window.__FORCE_MOBILE || window.innerWidth <= bp));
+  useEffect(() => {
+    if (window.__FORCE_MOBILE) { setM(true); return; }
+    const mq = window.matchMedia(`(max-width:${bp}px)`);
+    const h = () => setM(mq.matches);
+    h(); mq.addEventListener('change', h);
+    return () => mq.removeEventListener('change', h);
+  }, [bp]);
+  return m;
+}
+
+/* ============================================================
+   HEATMAP — GitHub-style contribution grid + editor + tooltip
+   ============================================================ */
+const CELL = 14, GAP = 3, STEP = CELL + GAP;
+
+function cellColor(habit, entry) {
+  if (habit.type === 'binary') return entry && entry.v ? WORKOUT_GREEN : EMPTY_CELL;
+  return lcColor(entry ? entry.v : 0);
+}
+function isMax(habit, entry) {
+  if (!entry || !entry.v) return false;
+  return habit.type === 'binary' ? true : entry.v >= 5;
+}
+
+function monthLabels(weeks) {
+  const out = []; let last = -1;
+  weeks.forEach((col, ci) => {
+    const sun = col[0] || col.find(Boolean);
+    if (!sun) return;
+    const m = sun.getMonth();
+    if (m !== last && ci > 0 && (out.length === 0 || ci - out[out.length - 1].col >= 3)) {
+      out.push({ col: ci, label: MONTHS[m] });
+    }
+    last = m;
+  });
+  return out;
+}
+
+/* Tooltip */
+function Tooltip({ habit, date, entry, rect }) {
+  if (!rect) return null;
+  const W = 200;
+  const left = Math.min(window.innerWidth - W - 8, Math.max(8, rect.left + rect.width / 2 - W / 2));
+  const top = rect.top - 12;
+  const val = entry ? entry.v : 0;
+  const valTxt = habit.type === 'binary'
+    ? (val ? 'Worked out' : 'No workout')
+    : `${val} ${val === 1 ? 'question' : 'questions'}`;
+  return (
+    <div style={{
+      position: 'fixed', left, top, width: W, transform: 'translateY(-100%)',
+      background: '#000', border: '1px solid var(--surface-line-strong)', borderRadius: 10,
+      padding: '10px 12px', boxShadow: 'var(--shadow-lg)', pointerEvents: 'none', zIndex: 60,
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>{fmtLong(date)}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 5 }}>
+        <span style={{ width: 9, height: 9, borderRadius: 2, background: cellColor(habit, entry), flex: 'none' }} />
+        <span className="whoop-num" style={{ fontSize: 15, color: val ? '#fff' : 'var(--fg-3)' }}>{valTxt}</span>
+      </div>
+      {entry && entry.note
+        ? <div style={{ fontSize: 12, color: 'var(--fg-2)', marginTop: 6, lineHeight: 1.35 }}>{entry.note}</div>
+        : <div style={{ fontSize: 12, color: 'var(--fg-disabled)', marginTop: 6, fontStyle: 'italic' }}>No note</div>}
+    </div>
+  );
+}
+
+/* Editor popover */
+function RoundBtn({ icon, onClick, disabled }) {
+  const [h, setH] = useState(false);
+  return (
+    <button onClick={onClick} disabled={disabled}
+      onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
+      style={{
+        width: 40, height: 40, borderRadius: 999, flex: 'none', cursor: disabled ? 'default' : 'pointer',
+        background: disabled ? 'var(--surface-1)' : (h ? 'var(--surface-3)' : 'var(--surface-2)'),
+        border: '1px solid var(--surface-line-strong)', color: disabled ? 'var(--fg-disabled)' : '#fff',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'background .15s',
+      }}>
+      <Icon name={icon} size={20} />
+    </button>
+  );
+}
+
+function Editor({ habit, date, entry, rect, onChange, onClose }) {
+  const ref = useRef(null);
+  const [pos, setPos] = useState(null);
+  const W = 268;
+  useLayoutEffect(() => {
+    const h = ref.current ? ref.current.offsetHeight : 220;
+    let left = Math.min(window.innerWidth - W - 10, Math.max(10, rect.left + rect.width / 2 - W / 2));
+    let top = rect.bottom + 12;
+    if (top + h > window.innerHeight - 10) top = Math.max(10, rect.top - h - 12);
+    setPos({ left, top });
+  }, [rect]);
+
+  const v = entry ? entry.v : 0;
+  const note = entry ? entry.note || '' : '';
+  const setV = (nv) => onChange({ v: Math.max(0, nv), note });
+  const setNote = (nn) => onChange({ v, note: nn });
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 70 }} />
+      <div ref={ref} style={{
+        position: 'fixed', left: pos ? pos.left : -9999, top: pos ? pos.top : 0, width: W,
+        background: 'var(--surface-2)', border: '1px solid var(--surface-line-strong)',
+        borderRadius: 16, boxShadow: 'var(--shadow-lg)', padding: 18, zIndex: 71,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--fg-2)' }}>{fmtLong(date)}</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--fg-3)', padding: 2, display: 'flex' }}><Icon name="x" size={18} /></button>
+        </div>
+
+        {habit.type === 'binary' ? (
+          <button onClick={() => setV(v ? 0 : 1)} style={{
+            width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9,
+            padding: '15px', borderRadius: 12, cursor: 'pointer', transition: 'all .15s',
+            fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 14, letterSpacing: '.08em', textTransform: 'uppercase',
+            background: v ? WORKOUT_GREEN : 'transparent', color: v ? '#04261a' : 'var(--fg-1)',
+            border: v ? 'none' : '1.5px solid var(--surface-line-strong)',
+            boxShadow: v ? '0 0 18px rgba(90,210,70,0.30)' : 'none',
+          }}>
+            <Icon name={v ? 'check' : 'dumbbell'} size={18} />{v ? 'Worked out' : 'Mark workout'}
+          </button>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <RoundBtn icon="minus" onClick={() => setV(v - 1)} disabled={v <= 0} />
+            <div style={{ textAlign: 'center', minWidth: 96 }}>
+              <div className="whoop-num" style={{ fontSize: 48, lineHeight: 1, color: v ? cellColor(habit, { v }) : 'var(--fg-3)' }}>{v}</div>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)', marginTop: 4 }}>{v === 1 ? 'Question' : 'Questions'}</div>
+            </div>
+            <RoundBtn icon="plus" onClick={() => setV(v + 1)} />
+          </div>
+        )}
+
+        <div style={{ marginTop: 14 }}>
+          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2}
+            placeholder={habit.type === 'binary' ? 'What did you train?' : 'What did you solve?'}
+            style={{
+              width: '100%', boxSizing: 'border-box', resize: 'none', borderRadius: 10,
+              background: 'var(--surface-0)', border: '1px solid var(--surface-line)', color: 'var(--fg-1)',
+              fontFamily: 'var(--font-sans)', fontSize: 13, lineHeight: 1.4, padding: '10px 11px', outline: 'none',
+            }} />
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* Heatmap grid */
+function Heatmap({ habit, data, weeks, onSet }) {
+  const [hover, setHover] = useState(null);
+  const [sel, setSel] = useState(null);
+  const scrollRef = useRef(null);
+  const months = useMemo(() => monthLabels(weeks), [weeks]);
+  const GUTTER = 30;
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const go = () => { el.scrollLeft = el.scrollWidth; };
+    go();
+    const raf = requestAnimationFrame(go);
+    const t = setTimeout(go, 350);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(go);
+    return () => { cancelAnimationFrame(raf); clearTimeout(t); };
+  }, [habit.id]);
+
+  const onCellClick = (date, e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const key = keyOf(date);
+    setHover(null);
+    setSel({ key, date, rect });
+  };
+
+  return (
+    <div ref={scrollRef} style={{ overflowX: 'auto', paddingBottom: 4 }}>
+      <div style={{ minWidth: GUTTER + 53 * STEP }}>
+        {/* month header */}
+        <div style={{ display: 'flex' }}>
+          <div style={{ width: GUTTER, flex: 'none' }} />
+          <div style={{ position: 'relative', height: 18, flex: 1 }}>
+            {months.map((m) => (
+              <span key={m.col} style={{ position: 'absolute', left: m.col * STEP, fontSize: 11, fontWeight: 600, color: 'var(--fg-3)', letterSpacing: '.02em' }}>{m.label}</span>
+            ))}
+          </div>
+        </div>
+        {/* day gutter + grid */}
+        <div style={{ display: 'flex' }}>
+          <div style={{ width: GUTTER, flex: 'none', display: 'flex', flexDirection: 'column', gap: GAP, paddingTop: 0 }}>
+            {[0, 1, 2, 3, 4, 5, 6].map((d) => (
+              <div key={d} style={{ height: CELL, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', paddingRight: 7, fontSize: 9, fontWeight: 600, color: 'var(--fg-3)' }}>
+                {d === 1 ? 'Mon' : d === 3 ? 'Wed' : d === 5 ? 'Fri' : ''}
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: GAP }}>
+            {weeks.map((col, ci) => (
+              <div key={ci} style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
+                {col.map((date, di) => {
+                  if (!date) return <div key={di} style={{ width: CELL, height: CELL }} />;
+                  const key = keyOf(date);
+                  const entry = data[key];
+                  const selected = sel && sel.key === key;
+                  const max = isMax(habit, entry);
+                  return (
+                    <div key={di}
+                      onClick={(e) => onCellClick(date, e)}
+                      onMouseEnter={(e) => { if (!sel) setHover({ key, date, rect: e.currentTarget.getBoundingClientRect() }); }}
+                      onMouseLeave={() => setHover((h) => (h && h.key === key ? null : h))}
+                      style={{
+                        width: CELL, height: CELL, borderRadius: 3, cursor: 'pointer',
+                        background: cellColor(habit, entry),
+                        outline: selected ? '2px solid var(--teal)' : '1px solid rgba(255,255,255,0.045)',
+                        outlineOffset: selected ? 1 : -1,
+                        boxShadow: max ? `0 0 7px ${cellColor(habit, entry)}` : 'none',
+                        transition: 'transform .1s, background .2s',
+                        transform: hover && hover.key === key ? 'scale(1.25)' : 'scale(1)',
+                      }} />
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* legend */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 7, marginTop: 14, paddingRight: 2 }}>
+          <span style={{ fontSize: 11, color: 'var(--fg-3)', fontWeight: 600 }}>Less</span>
+          {(habit.type === 'binary' ? [EMPTY_CELL, WORKOUT_GREEN] : LC_SCALE).map((c, i) => (
+            <span key={i} style={{ width: CELL, height: CELL, borderRadius: 3, background: c, outline: '1px solid rgba(255,255,255,0.045)', outlineOffset: -1 }} />
+          ))}
+          <span style={{ fontSize: 11, color: 'var(--fg-3)', fontWeight: 600 }}>More</span>
+        </div>
+      </div>
+
+      {hover && !sel && <Tooltip habit={habit} date={hover.date} entry={data[hover.key]} rect={hover.rect} />}
+      {sel && (
+        <Editor habit={habit} date={sel.date} entry={data[sel.key]} rect={sel.rect}
+          onChange={(e) => onSet(sel.key, e)} onClose={() => setSel(null)} />
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   STATS — weekly performance, cards, trend, two-week glance
+   ============================================================ */
+function valOf(habit, entry) {
+  if (!entry) return 0;
+  return habit.type === 'binary' ? (entry.v ? 1 : 0) : entry.v;
+}
+
+function computeStats(habit, data, weeks, today) {
+  const weekTotal = (offset) => {
+    const col = weeks[52 - offset];
+    if (!col) return 0;
+    return col.reduce((s, d) => s + (d ? valOf(habit, data[keyOf(d)]) : 0), 0);
+  };
+  const thisWeek = weekTotal(0);
+  const lastWeek = weekTotal(1);
+  const prior4 = [1, 2, 3, 4].map(weekTotal);
+  const avg4 = prior4.reduce((a, b) => a + b, 0) / 4;
+
+  const active = (d) => valOf(habit, data[keyOf(d)]) > 0;
+  let cur = 0, cursor = startOfDay(today);
+  if (!active(cursor)) cursor = addDays(cursor, -1);
+  while (active(cursor)) { cur++; cursor = addDays(cursor, -1); }
+
+  let longest = 0, run = 0, activeDays = 0, yearTotal = 0;
+  weeks.flat().filter(Boolean).forEach((d) => {
+    const v = valOf(habit, data[keyOf(d)]);
+    if (v > 0) { activeDays++; yearTotal += v; run++; longest = Math.max(longest, run); }
+    else run = 0;
+  });
+
+  const last8 = [7, 6, 5, 4, 3, 2, 1, 0].map(weekTotal);
+  return { thisWeek, lastWeek, avg4, cur, longest, activeDays, yearTotal, last8 };
+}
+
+/* Delta chip */
+function Delta({ now, base, suffix = '%' }) {
+  let pct;
+  if (base > 0) pct = Math.round(((now - base) / base) * 100);
+  else pct = now > 0 ? 100 : 0;
+  const up = pct > 0, down = pct < 0;
+  const color = up ? 'var(--teal)' : down ? 'var(--recovery-low)' : 'var(--fg-3)';
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color, fontWeight: 700 }}>
+      <Icon name={up ? 'trending-up' : down ? 'trending-down' : 'chevron-right'} size={15} color={color} />
+      <span className="whoop-num" style={{ fontSize: 14 }}>{up ? '+' : ''}{pct}{suffix}</span>
+    </span>
+  );
+}
+
+/* Stat card */
+function StatCard({ label, value, unit, accent = 'var(--fg-1)', footer }) {
+  return (
+    <Card pad={20} style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+      <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>{label}</span>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginTop: 2 }}>
+        <span className="whoop-num" style={{ fontSize: 46, lineHeight: 1, color: accent }}>{value}</span>
+        {unit && <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-3)' }}>{unit}</span>}
+      </div>
+      <div style={{ fontSize: 12.5, color: 'var(--fg-2)', fontWeight: 500, marginTop: 6, minHeight: 18, display: 'flex', alignItems: 'center', gap: 6 }}>{footer}</div>
+    </Card>
+  );
+}
+
+/* 8-week trend bars */
+function TrendCard({ habit, stats }) {
+  const data = stats.last8;
+  const max = Math.max(1, ...data);
+  const accent = habit.type === 'binary' ? WORKOUT_GREEN : 'var(--recovery-high)';
+  const labels = ['7w', '6w', '5w', '4w', '3w', '2w', 'Last', 'This'];
+  return (
+    <Card pad={22} style={{ display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>Last 8 weeks</span>
+        <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-3)', whiteSpace: 'nowrap' }}>{habit.unit} / wk</span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, height: 116 }}>
+        {data.map((v, i) => {
+          const isThis = i === data.length - 1;
+          return (
+            <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+              <span className="whoop-num" style={{ fontSize: 12, color: isThis ? accent : 'var(--fg-2)', fontWeight: 700 }}>{v}</span>
+              <div style={{
+                width: '100%', maxWidth: 30, height: `${Math.max(4, (v / max) * 92)}px`,
+                background: isThis ? accent : 'rgba(255,255,255,0.14)',
+                borderRadius: '5px 5px 3px 3px',
+                boxShadow: isThis ? `0 0 14px ${accent}66` : 'none', transition: 'height .5s',
+              }} />
+              <span style={{ fontSize: 10, fontWeight: 600, color: isThis ? 'var(--fg-2)' : 'var(--fg-3)' }}>{labels[i]}</span>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+/* Stats strip */
+function StatsStrip({ habit, stats }) {
+  const mobile = useIsMobile();
+  const accent = habit.type === 'binary' ? WORKOUT_GREEN : 'var(--recovery-high)';
+  const avgRounded = habit.type === 'binary' ? stats.avg4.toFixed(1) : Math.round(stats.avg4);
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: mobile ? '1fr' : '1.1fr 1fr 1fr 1.6fr', gap: mobile ? 12 : 16, alignItems: 'stretch' }}>
+      <StatCard
+        label="This week" value={stats.thisWeek} unit={habit.unit}
+        accent={accent}
+        footer={<><span style={{ color: 'var(--fg-3)' }}>vs last week</span><Delta now={stats.thisWeek} base={stats.lastWeek} /></>} />
+      <StatCard
+        label="4-week avg" value={avgRounded} unit={habit.unit}
+        footer={<><span style={{ color: 'var(--fg-3)' }}>this week</span><Delta now={stats.thisWeek} base={stats.avg4} /></>} />
+      <StatCard
+        label="Current streak" value={stats.cur} unit={stats.cur === 1 ? 'day' : 'days'}
+        accent={stats.cur > 0 ? 'var(--teal)' : 'var(--fg-1)'}
+        footer={<><Icon name="flame" size={14} color="var(--fg-3)" /><span style={{ color: 'var(--fg-3)' }}>best {stats.longest} days</span></>} />
+      <TrendCard habit={habit} stats={stats} />
+    </div>
+  );
+}
+
+/* Two-week glance report (Mon to Sun) */
+const WD_LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+
+function rangeLabel(a, b) {
+  const right = a.getMonth() === b.getMonth() ? b.getDate() : `${MONTHS[b.getMonth()]} ${b.getDate()}`;
+  return `${MONTHS[a.getMonth()]} ${a.getDate()} \u2013 ${right}`;
+}
+
+function DayGlance({ habit, date, entry, future, isToday }) {
+  const v = entry ? entry.v : 0;
+  const done = habit.type === 'binary' ? !!v : v > 0;
+  const bright = habit.type === 'binary' || v >= 4;
+  const bg = future ? 'transparent' : cellColor(habit, entry);
+  const note = entry && entry.note ? entry.note : '';
+  const title = future ? '' : `${fmtLong(date)} \u00b7 ${habit.type === 'binary' ? (done ? 'worked out' : 'rest') : v + ' questions'}${note ? ' \u00b7 ' + note : ''}`;
+  return (
+    <div title={title} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, minWidth: 0 }}>
+      <span style={{ fontSize: 11, fontWeight: 700, color: isToday ? 'var(--teal)' : 'var(--fg-3)' }}>{WD_LETTERS[(date.getDay() + 6) % 7]}</span>
+      <div style={{
+        width: '100%', maxWidth: 44, aspectRatio: '1', borderRadius: 12,
+        background: bg,
+        border: future ? '1.5px dashed var(--surface-line-strong)' : '1px solid rgba(255,255,255,0.05)',
+        outline: isToday ? '2px solid var(--teal)' : 'none', outlineOffset: 2,
+        boxShadow: done && bright && !future ? `0 0 12px ${bg}66` : 'none',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        {habit.type === 'binary'
+          ? (done && <Icon name="check" size={20} color="#04261a" stroke={2.4} />)
+          : (!future && <span className="whoop-num" style={{ fontSize: 18, color: v ? (bright ? '#04261a' : '#fff') : 'var(--fg-disabled)' }}>{v}</span>)}
+      </div>
+      <span style={{ fontSize: 10, fontWeight: 600, color: isToday ? 'var(--fg-2)' : 'var(--fg-3)' }}>{date.getDate()}</span>
+    </div>
+  );
+}
+
+function WeekBlock({ habit, label, monday, data, today, total, delta }) {
+  const days = weekDates(monday);
+  const accent = habit.type === 'binary' ? WORKOUT_GREEN : 'var(--recovery-high)';
+  return (
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 'none' }}>
+          <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-2)', whiteSpace: 'nowrap' }}>{label}</span>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg-3)', whiteSpace: 'nowrap' }}>{rangeLabel(days[0], days[6])}</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flex: 'none' }}>
+          {delta}
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
+            <span className="whoop-num" style={{ fontSize: 30, lineHeight: 1, color: accent }}>{total}</span>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-3)' }}>{habit.unit}</span>
+          </div>
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 7 }}>
+        {days.map((d, i) => (
+          <DayGlance key={i} habit={habit} date={d} entry={data[keyOf(d)]} future={d > today} isToday={keyOf(d) === keyOf(today)} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WeekReport({ habit, data, today }) {
+  const mobile = useIsMobile();
+  const thisMon = mondayOf(today);
+  const lastMon = addDays(thisMon, -7);
+  const sum = (mon) => weekDates(mon).reduce((s, d) => s + (d <= today ? valOf(habit, data[keyOf(d)]) : 0), 0);
+  const lastTotal = sum(lastMon);
+  const thisTotal = sum(thisMon);
+  return (
+    <Card pad={mobile ? 18 : 26} style={{ marginTop: 16 }}>
+      <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>Last 2 weeks \u00b7 Mon \u2192 Sun</span>
+      <div style={{ display: 'flex', flexDirection: mobile ? 'column' : 'row', gap: mobile ? 24 : 40, marginTop: 20, alignItems: 'stretch' }}>
+        <WeekBlock habit={habit} label="Last week" monday={lastMon} data={data} today={today} total={lastTotal} />
+        <div style={{ flex: 'none', background: 'var(--surface-line)', ...(mobile ? { height: 1, width: '100%' } : { width: 1, alignSelf: 'stretch' }) }} />
+        <WeekBlock habit={habit} label="This week" monday={thisMon} data={data} today={today} total={thisTotal}
+          delta={<Delta now={thisTotal} base={lastTotal} />} />
+      </div>
+    </Card>
+  );
+}
+
+/* ============================================================
+   APP — composition
+   ============================================================ */
+const HABITS = [
+  { id: 'workout',  name: 'Work Out',  type: 'binary', unit: 'workouts',  icon: 'dumbbell', accent: WORKOUT_GREEN },
+  { id: 'leetcode', name: 'Leetcode',  type: 'count',  unit: 'questions', icon: 'code',     accent: 'var(--recovery-high)' },
+];
+
+function Tab({ habit, active, onClick }) {
+  const [h, setH] = useState(false);
+  return (
+    <button onClick={onClick}
+      onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 9, padding: '10px 18px', borderRadius: 999,
+        border: 'none', cursor: 'pointer', transition: 'background .15s, color .15s',
+        background: active ? 'var(--surface-3)' : (h ? 'var(--surface-2)' : 'transparent'),
+        color: active ? '#fff' : 'var(--fg-2)',
+        fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 13, letterSpacing: '.08em', textTransform: 'uppercase',
+      }}>
+      <span style={{ width: 9, height: 9, borderRadius: 3, background: habit.accent, flex: 'none', boxShadow: active ? `0 0 8px ${habit.accent}` : 'none' }} />
+      {habit.name}
+    </button>
+  );
+}
+
+function App() {
+  const today = useMemo(() => startOfDay(new Date()), []);
+  const weeks = useMemo(() => buildWeeks(today), [today]);
+  const [store, setStore] = useState(() => loadStore(weeks));
+  const [activeId, setActiveId] = useState('workout');
+  const habit = HABITS.find((h) => h.id === activeId);
+  const data = store[habit.id] || {};
+  const stats = useMemo(() => computeStats(habit, data, weeks, today), [habit, data, weeks, today]);
+
+  const onSet = useCallback((key, entry) => {
+    setStore((prev) => {
+      const habitData = { ...(prev[activeId] || {}) };
+      if (!entry.v && !(entry.note && entry.note.trim())) delete habitData[key];
+      else habitData[key] = entry;
+      const next = { ...prev, [activeId]: habitData };
+      saveStore(next);
+      return next;
+    });
+  }, [activeId]);
+
+  const mobile = useIsMobile();
+  const displayWeeks = mobile ? weeks.slice(-17) : weeks;
+  const yearlySummary = habit.type === 'binary'
+    ? `${stats.activeDays} workouts logged in the last year`
+    : `${stats.yearTotal} questions across ${stats.activeDays} active days in the last year`;
+
+  return (
+    <div style={{ width: '100%', maxWidth: 1180, margin: '0 auto', padding: mobile ? '20px 14px 44px' : '40px 32px 64px' }}>
+      {/* header */}
+      <header style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px 16px', marginBottom: mobile ? 22 : 30 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+          <span style={{ fontSize: 18, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-1)' }}>DHIMANT</span>
+          <span style={{ width: 1, height: 26, background: 'var(--surface-line-strong)' }} />
+          <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-2)' }}>Habit Tracker</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--fg-3)' }}>
+          <Icon name="calendar" size={15} color="var(--fg-3)" />
+          <span style={{ fontSize: 12.5, fontWeight: 600 }}>{fmtLong(today)}, {today.getFullYear()}</span>
+        </div>
+      </header>
+
+      {/* habit tabs */}
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
+        <div style={{ display: 'flex', gap: 4, background: 'var(--surface-0)', border: '1px solid var(--surface-line)', borderRadius: 999, padding: 4 }}>
+          {HABITS.map((h) => <Tab key={h.id} habit={h} active={h.id === activeId} onClick={() => setActiveId(h.id)} />)}
+        </div>
+        <button onClick={() => {}} title="Add a habit (mockup)"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '11px 16px', borderRadius: 999, cursor: 'pointer', background: 'transparent', border: '1px dashed var(--surface-line-strong)', color: 'var(--fg-3)', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 12, letterSpacing: '.08em', textTransform: 'uppercase' }}>
+          <Icon name="plus" size={15} color="var(--fg-3)" />New habit
+        </button>
+      </div>
+
+      {/* heatmap card */}
+      <Card pad={mobile ? 16 : 26} style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 22 }}>
+          <div style={{ width: 44, height: 44, borderRadius: 12, background: 'var(--surface-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 'none' }}>
+            <Icon name={habit.icon} size={22} color={habit.accent} />
+          </div>
+          <div>
+            <h3 className="whoop-h3" style={{ margin: 0 }}>{habit.name}</h3>
+            <div style={{ fontSize: 13, color: 'var(--fg-2)', fontWeight: 500, marginTop: 3 }}>{yearlySummary}</div>
+          </div>
+          <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+            <div className="whoop-num" style={{ fontSize: 34, lineHeight: 1, color: habit.accent }}>{stats.cur}</div>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)', marginTop: 2 }}>Day streak</div>
+          </div>
+        </div>
+        <Heatmap habit={habit} data={data} weeks={displayWeeks} onSet={onSet} />
+        <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 14, display: 'flex', alignItems: 'center', gap: 7 }}>
+          <Icon name="pencil" size={13} color="var(--fg-3)" />
+          <span>Click any day to log {habit.type === 'binary' ? 'a workout' : 'questions'} and add a note \u00b7 hover to review</span>
+        </div>
+      </Card>
+
+      {/* two-week glance — directly under heatmap */}
+      <WeekReport habit={habit} data={data} today={today} />
+
+      {/* stats */}
+      <div style={{ marginTop: 16 }}>
+        <StatsStrip habit={habit} stats={stats} />
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
