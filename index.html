@@ -180,18 +180,25 @@ function buildWeeks(today) {
   return weeks;
 }
 
-/* Color scales */
+/* Color scales — green intensity ramp generated for ANY number of levels */
 const EMPTY_CELL = 'rgba(255,255,255,0.05)';
-const LC_SCALE = [
-  EMPTY_CELL,
-  'oklch(0.42 0.11 150)',
-  'oklch(0.54 0.155 147)',
-  'oklch(0.66 0.20 144)',
-  'oklch(0.77 0.245 142)',
-  '#16EC06',
-];
-function lcColor(n) { return LC_SCALE[Math.min(5, Math.max(0, n | 0))]; }
 const WORKOUT_GREEN = 'oklch(0.77 0.245 142)';
+
+/* n: 0..levels (0 = empty). Produces light -> dark/bright green across `levels` steps. */
+function rampColor(levels, n) {
+  const maxN = Math.max(1, levels | 0);
+  if ((n | 0) <= 0) return EMPTY_CELL;
+  const t = Math.min(1, (n | 0) / maxN);
+  const L = (0.40 + 0.42 * t).toFixed(3);
+  const C = (0.105 + 0.150 * t).toFixed(3);
+  const H = (150 - 8 * t).toFixed(1);
+  return `oklch(${L} ${C} ${H})`;
+}
+function rampScale(levels) {
+  const out = [EMPTY_CELL];
+  for (let i = 1; i <= Math.max(1, levels | 0); i++) out.push(rampColor(levels, i));
+  return out;
+}
 
 /* ============================================================
    PERSISTENCE — Supabase backend (shared, persistent storage)
@@ -204,7 +211,43 @@ const SUPABASE_KEY = 'sb_publishable_H5DaO2EHKrg310rnu2zHGw_46nC-NT5';
 const TABLE = 'habit_entries';
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const emptyStore = () => ({ workout: {}, leetcode: {} });
+const HABITS_TABLE = 'habits';
+const emptyStore = () => ({});
+
+/* ---- Habits (definitions) data layer ---- */
+function habitAccent(type) { return type === 'binary' ? WORKOUT_GREEN : 'var(--recovery-high)'; }
+function rowToHabit(r) {
+  return {
+    id: r.id, name: r.name, type: r.type,
+    levels: r.levels || (r.type === 'binary' ? 1 : 5),
+    unit: r.unit || 'times', icon: r.icon || 'target',
+    sort_order: r.sort_order || 0, accent: habitAccent(r.type),
+  };
+}
+function slugify(name) {
+  const base = (name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'habit';
+  return `${base}-${Math.random().toString(36).slice(2, 6)}`;
+}
+async function fetchHabits() {
+  const { data, error } = await sb.from(HABITS_TABLE).select('*').order('sort_order');
+  if (error) { console.error('Habits fetch failed:', error.message); return []; }
+  return (data || []).map(rowToHabit);
+}
+async function insertHabit(h) {
+  const res = await sb.from(HABITS_TABLE).insert({ id: h.id, name: h.name, type: h.type, levels: h.levels, unit: h.unit, icon: h.icon, sort_order: h.sort_order });
+  if (res.error) console.error('Habit insert failed:', res.error.message);
+  return res;
+}
+async function updateHabit(id, patch) {
+  const res = await sb.from(HABITS_TABLE).update(patch).eq('id', id);
+  if (res.error) console.error('Habit update failed:', res.error.message);
+  return res;
+}
+async function deleteHabit(id) {
+  const res = await sb.from(HABITS_TABLE).delete().eq('id', id); // entries cascade via FK
+  if (res.error) console.error('Habit delete failed:', res.error.message);
+  return res;
+}
 
 /* Pull the whole dataset and shape it into { habitId: { dateKey: {v,note} } } */
 async function fetchStore() {
@@ -269,13 +312,16 @@ function useIsMobile(bp = 760) {
 const CELL = 14, GAP = 3, STEP = CELL + GAP;
 
 function cellColor(habit, entry) {
-  if (habit.type === 'binary') return entry && entry.v ? WORKOUT_GREEN : EMPTY_CELL;
-  return lcColor(entry ? entry.v : 0);
+  const v = entry ? entry.v : 0;
+  if (habit.type === 'binary') return v ? WORKOUT_GREEN : EMPTY_CELL;
+  return rampColor(habit.levels || 5, v);
 }
 function isMax(habit, entry) {
   if (!entry || !entry.v) return false;
-  return habit.type === 'binary' ? true : entry.v >= 5;
+  return habit.type === 'binary' ? true : entry.v >= (habit.levels || 5);
 }
+function singular(u) { return u && u.endsWith('s') ? u.slice(0, -1) : u; }
+function unitLabel(habit, v) { return v === 1 ? singular(habit.unit) : habit.unit; }
 
 function monthLabels(weeks) {
   const out = []; let last = -1;
@@ -299,8 +345,8 @@ function Tooltip({ habit, date, entry, rect }) {
   const top = rect.top - 12;
   const val = entry ? entry.v : 0;
   const valTxt = habit.type === 'binary'
-    ? (val ? 'Worked out' : 'No workout')
-    : `${val} ${val === 1 ? 'question' : 'questions'}`;
+    ? (val ? 'Done' : 'Not done')
+    : `${val} ${unitLabel(habit, val)}`;
   return (
     <div style={{
       position: 'fixed', left, top, width: W, transform: 'translateY(-100%)',
@@ -348,9 +394,10 @@ function Editor({ habit, date, entry, rect, onChange, onClose }) {
     setPos({ left, top });
   }, [rect]);
 
+  const maxV = habit.type === 'binary' ? 1 : (habit.levels || 5);
   const v = entry ? entry.v : 0;
   const note = entry ? entry.note || '' : '';
-  const setV = (nv) => onChange({ v: Math.max(0, nv), note });
+  const setV = (nv) => onChange({ v: Math.min(maxV, Math.max(0, nv)), note });
   const setNote = (nn) => onChange({ v, note: nn });
 
   return (
@@ -375,22 +422,22 @@ function Editor({ habit, date, entry, rect, onChange, onClose }) {
             border: v ? 'none' : '1.5px solid var(--surface-line-strong)',
             boxShadow: v ? '0 0 18px rgba(90,210,70,0.30)' : 'none',
           }}>
-            <Icon name={v ? 'check' : 'dumbbell'} size={18} />{v ? 'Worked out' : 'Mark workout'}
+            <Icon name={v ? 'check' : habit.icon} size={18} />{v ? 'Done' : `Mark ${habit.name}`}
           </button>
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <RoundBtn icon="minus" onClick={() => setV(v - 1)} disabled={v <= 0} />
             <div style={{ textAlign: 'center', minWidth: 96 }}>
               <div className="whoop-num" style={{ fontSize: 48, lineHeight: 1, color: v ? cellColor(habit, { v }) : 'var(--fg-3)' }}>{v}</div>
-              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)', marginTop: 4 }}>{v === 1 ? 'Question' : 'Questions'}</div>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)', marginTop: 4 }}>{unitLabel(habit, v)}</div>
             </div>
-            <RoundBtn icon="plus" onClick={() => setV(v + 1)} />
+            <RoundBtn icon="plus" onClick={() => setV(v + 1)} disabled={v >= maxV} />
           </div>
         )}
 
         <div style={{ marginTop: 14 }}>
           <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2}
-            placeholder={habit.type === 'binary' ? 'What did you train?' : 'What did you solve?'}
+            placeholder="Add a note (optional)"
             style={{
               width: '100%', boxSizing: 'border-box', resize: 'none', borderRadius: 10,
               background: 'var(--surface-0)', border: '1px solid var(--surface-line)', color: 'var(--fg-1)',
@@ -482,7 +529,7 @@ function Heatmap({ habit, data, weeks, onSet }) {
         {/* legend */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 7, marginTop: 14, paddingRight: 2 }}>
           <span style={{ fontSize: 11, color: 'var(--fg-3)', fontWeight: 600 }}>Less</span>
-          {(habit.type === 'binary' ? [EMPTY_CELL, WORKOUT_GREEN] : LC_SCALE).map((c, i) => (
+          {(habit.type === 'binary' ? [EMPTY_CELL, WORKOUT_GREEN] : rampScale(habit.levels || 5)).map((c, i) => (
             <span key={i} style={{ width: CELL, height: CELL, borderRadius: 3, background: c, outline: '1px solid rgba(255,255,255,0.045)', outlineOffset: -1 }} />
           ))}
           <span style={{ fontSize: 11, color: 'var(--fg-3)', fontWeight: 600 }}>More</span>
@@ -632,7 +679,7 @@ function DayGlance({ habit, date, entry, future, isToday }) {
   const bright = habit.type === 'binary' || v >= 4;
   const bg = future ? 'transparent' : cellColor(habit, entry);
   const note = entry && entry.note ? entry.note : '';
-  const title = future ? '' : `${fmtLong(date)} \u00b7 ${habit.type === 'binary' ? (done ? 'worked out' : 'rest') : v + ' questions'}${note ? ' \u00b7 ' + note : ''}`;
+  const title = future ? '' : `${fmtLong(date)} \u00b7 ${habit.type === 'binary' ? (done ? 'done' : 'rest') : v + ' ' + habit.unit}${note ? ' \u00b7 ' + note : ''}`;
   return (
     <div title={title} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, minWidth: 0 }}>
       <span style={{ fontSize: 11, fontWeight: 700, color: isToday ? 'var(--teal)' : 'var(--fg-3)' }}>{WD_LETTERS[(date.getDay() + 6) % 7]}</span>
@@ -689,7 +736,7 @@ function WeekReport({ habit, data, today }) {
   const thisTotal = sum(thisMon);
   return (
     <Card pad={mobile ? 18 : 26} style={{ marginTop: 16 }}>
-      <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>Last 2 weeks \u00b7 Mon \u2192 Sun</span>
+      <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>{'Last 2 weeks \u00b7 Mon \u2192 Sun'}</span>
       <div style={{ display: 'flex', flexDirection: mobile ? 'column' : 'row', gap: mobile ? 24 : 40, marginTop: 20, alignItems: 'stretch' }}>
         <WeekBlock habit={habit} label="Last week" monday={lastMon} data={data} today={today} total={lastTotal} />
         <div style={{ flex: 'none', background: 'var(--surface-line)', ...(mobile ? { height: 1, width: '100%' } : { width: 1, alignSelf: 'stretch' }) }} />
@@ -703,10 +750,107 @@ function WeekReport({ habit, data, today }) {
 /* ============================================================
    APP — composition
    ============================================================ */
-const HABITS = [
-  { id: 'workout',  name: 'Work Out',  type: 'binary', unit: 'workouts',  icon: 'dumbbell', accent: WORKOUT_GREEN },
-  { id: 'leetcode', name: 'Leetcode',  type: 'count',  unit: 'questions', icon: 'code',     accent: 'var(--recovery-high)' },
-];
+const ICON_CHOICES = ['dumbbell', 'code', 'flame', 'zap', 'target', 'calendar', 'pencil', 'trending-up'];
+
+/* Create / edit / delete a habit. Pure form — persistence handled by caller. */
+function HabitModal({ initial, onSave, onDelete, onClose }) {
+  const isEdit = !!initial;
+  const [name, setName] = useState(initial ? initial.name : '');
+  const [type, setType] = useState(initial ? initial.type : 'count');
+  const [levels, setLevels] = useState(initial ? (initial.levels || 5) : 5);
+  const [unit, setUnit] = useState(initial ? initial.unit : '');
+  const [icon, setIcon] = useState(initial ? initial.icon : 'target');
+  const [confirmDel, setConfirmDel] = useState(false);
+  const canSave = name.trim().length > 0;
+
+  const submit = () => {
+    if (!canSave) return;
+    onSave({ name: name.trim(), type, levels: type === 'count' ? levels : 1, unit: unit.trim() || 'times', icon });
+  };
+
+  const field = { width: '100%', boxSizing: 'border-box', borderRadius: 10, background: 'var(--surface-0)', border: '1px solid var(--surface-line)', color: 'var(--fg-1)', fontFamily: 'var(--font-sans)', fontSize: 14, padding: '11px 12px', outline: 'none' };
+  const lbl = { fontSize: 11, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--fg-3)', display: 'block', marginBottom: 8 };
+  const previewScale = type === 'binary' ? [EMPTY_CELL, WORKOUT_GREEN] : rampScale(levels);
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: '100%', maxWidth: 420, maxHeight: '90vh', overflowY: 'auto', background: 'var(--surface-2)', border: '1px solid var(--surface-line-strong)', borderRadius: 18, boxShadow: 'var(--shadow-lg)', padding: 22 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+          <span className="whoop-h3" style={{ fontSize: 18 }}>{isEdit ? 'Edit habit' : 'New habit'}</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--fg-3)', display: 'flex' }}><Icon name="x" size={20} /></button>
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <label style={lbl}>Name</label>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Reading" maxLength={40} style={field} autoFocus />
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <label style={lbl}>Type</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {[['binary', 'Yes / No'], ['count', 'Count']].map(([val, txt]) => (
+              <button key={val} onClick={() => setType(val)} style={{
+                flex: 1, padding: '11px', borderRadius: 10, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 13,
+                background: type === val ? 'var(--surface-3)' : 'transparent',
+                border: type === val ? '1.5px solid var(--teal)' : '1.5px solid var(--surface-line-strong)',
+                color: type === val ? '#fff' : 'var(--fg-2)',
+              }}>{txt}</button>
+            ))}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 7 }}>
+            {type === 'binary' ? 'Each day is simply done or not done.' : 'Log a number each day, shaded by intensity.'}
+          </div>
+        </div>
+
+        {type === 'count' && (
+          <div style={{ marginBottom: 16 }}>
+            <label style={lbl}>Levels — {levels}</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <input type="range" min={2} max={7} value={levels} onChange={(e) => setLevels(Number(e.target.value))} style={{ flex: 1, accentColor: '#00F19F' }} />
+              <div style={{ display: 'flex', gap: 3 }}>
+                {previewScale.map((c, i) => <span key={i} style={{ width: 14, height: 14, borderRadius: 3, background: c, outline: '1px solid rgba(255,255,255,0.045)', outlineOffset: -1 }} />)}
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 7 }}>Shades from light to bright green ({levels} levels).</div>
+          </div>
+        )}
+
+        <div style={{ marginBottom: 16 }}>
+          <label style={lbl}>Unit label</label>
+          <input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder={type === 'binary' ? 'e.g. days' : 'e.g. pages, questions'} maxLength={24} style={field} />
+        </div>
+
+        <div style={{ marginBottom: 20 }}>
+          <label style={lbl}>Icon</label>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {ICON_CHOICES.map((ic) => (
+              <button key={ic} onClick={() => setIcon(ic)} style={{
+                width: 42, height: 42, borderRadius: 10, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: icon === ic ? 'var(--surface-3)' : 'var(--surface-0)',
+                border: icon === ic ? '1.5px solid var(--teal)' : '1px solid var(--surface-line)',
+                color: icon === ic ? 'var(--teal)' : 'var(--fg-2)',
+              }}><Icon name={ic} size={20} /></button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 6 }}>
+          {isEdit && (
+            <button onClick={() => (confirmDel ? onDelete(initial.id) : setConfirmDel(true))} style={{
+              padding: '12px 14px', borderRadius: 10, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 13,
+              background: confirmDel ? 'var(--recovery-low)' : 'transparent',
+              border: confirmDel ? 'none' : '1px solid var(--surface-line-strong)',
+              color: confirmDel ? '#fff' : 'var(--recovery-low)',
+            }}>{confirmDel ? 'Confirm delete' : 'Delete'}</button>
+          )}
+          <div style={{ flex: 1 }} />
+          <button onClick={onClose} style={{ padding: '12px 16px', borderRadius: 10, cursor: 'pointer', background: 'transparent', border: '1px solid var(--surface-line-strong)', color: 'var(--fg-2)', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 13 }}>Cancel</button>
+          <button onClick={submit} disabled={!canSave} style={{ padding: '12px 20px', borderRadius: 10, cursor: canSave ? 'pointer' : 'default', background: canSave ? 'var(--teal)' : 'var(--surface-1)', border: 'none', color: canSave ? '#04261a' : 'var(--fg-disabled)', fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 13 }}>{isEdit ? 'Save' : 'Create'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function Tab({ habit, active, onClick }) {
   const [h, setH] = useState(false);
@@ -730,23 +874,37 @@ function App() {
   const today = useMemo(() => startOfDay(new Date()), []);
   const weeks = useMemo(() => buildWeeks(today), [today]);
   const [store, setStore] = useState(emptyStore);
+  const [habits, setHabits] = useState([]);
   const [synced, setSynced] = useState(false);
-  const [activeId, setActiveId] = useState('workout');
-  const habit = HABITS.find((h) => h.id === activeId);
-  const data = store[habit.id] || {};
-  const stats = useMemo(() => computeStats(habit, data, weeks, today), [habit, data, weeks, today]);
+  const [activeId, setActiveId] = useState(null);
+  const [modal, setModal] = useState(null); // null | { habit } (habit null => create)
 
-  /* Load from backend on mount + subscribe to live changes from other clients */
+  const habit = habits.find((h) => h.id === activeId) || null;
+  const data = habit ? (store[habit.id] || {}) : {};
+  const stats = useMemo(() => (habit ? computeStats(habit, data, weeks, today) : null), [habit, data, weeks, today]);
+
+  /* Load habits + entries on mount; subscribe to live changes on both tables. */
   useEffect(() => {
     let mounted = true;
-    fetchStore().then((s) => { if (mounted) { setStore(s); setSynced(true); } });
-    const channel = sb
-      .channel('habit_entries_rt')
+    Promise.all([fetchHabits(), fetchStore()]).then(([hs, s]) => {
+      if (!mounted) return;
+      setHabits(hs); setStore(s); setSynced(true);
+    });
+    const eChannel = sb.channel('habit_entries_rt')
       .on('postgres_changes', { event: '*', schema: 'public', table: TABLE },
         (payload) => { if (mounted) setStore((prev) => applyRealtime(prev, payload)); })
       .subscribe();
-    return () => { mounted = false; sb.removeChannel(channel); };
+    const hChannel = sb.channel('habits_rt')
+      .on('postgres_changes', { event: '*', schema: 'public', table: HABITS_TABLE },
+        () => { fetchHabits().then((list) => { if (mounted) setHabits(list); }); })
+      .subscribe();
+    return () => { mounted = false; sb.removeChannel(eChannel); sb.removeChannel(hChannel); };
   }, []);
+
+  /* Keep a valid active habit selected (initial load, deletes, realtime). */
+  useEffect(() => {
+    if (habits.length && !habits.some((h) => h.id === activeId)) setActiveId(habits[0].id);
+  }, [habits, activeId]);
 
   const onSet = useCallback((key, entry) => {
     setStore((prev) => {
@@ -758,11 +916,42 @@ function App() {
     persistEntry(activeId, key, entry);
   }, [activeId]);
 
+  const saveHabit = (form) => {
+    if (modal && modal.habit) {
+      const id = modal.habit.id;
+      const updated = rowToHabit({ ...modal.habit, ...form });
+      setHabits((prev) => prev.map((h) => (h.id === id ? updated : h)));
+      updateHabit(id, { name: form.name, type: form.type, levels: form.levels, unit: form.unit, icon: form.icon });
+    } else {
+      const id = slugify(form.name);
+      const sort_order = habits.length ? Math.max(...habits.map((h) => h.sort_order)) + 1 : 0;
+      setHabits((prev) => [...prev, rowToHabit({ id, ...form, sort_order })]);
+      setActiveId(id);
+      insertHabit({ id, ...form, sort_order });
+    }
+    setModal(null);
+  };
+
+  const removeHabit = (id) => {
+    const next = habits.filter((h) => h.id !== id);
+    setHabits(next);
+    if (activeId === id) setActiveId(next[0] ? next[0].id : null);
+    deleteHabit(id);
+    setModal(null);
+  };
+
   const mobile = useIsMobile();
   const displayWeeks = mobile ? weeks.slice(-17) : weeks;
-  const yearlySummary = habit.type === 'binary'
-    ? `${stats.activeDays} workouts logged in the last year`
-    : `${stats.yearTotal} questions across ${stats.activeDays} active days in the last year`;
+  const yearlySummary = habit && (habit.type === 'binary'
+    ? `${stats.activeDays} ${habit.unit} logged in the last year`
+    : `${stats.yearTotal} ${habit.unit} across ${stats.activeDays} active days in the last year`);
+
+  const newHabitBtn = (
+    <button onClick={() => setModal({ habit: null })} title="Add a habit"
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '11px 16px', borderRadius: 999, cursor: 'pointer', background: 'transparent', border: '1px dashed var(--surface-line-strong)', color: 'var(--fg-3)', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 12, letterSpacing: '.08em', textTransform: 'uppercase' }}>
+      <Icon name="plus" size={15} color="var(--fg-3)" />New habit
+    </button>
+  );
 
   return (
     <div style={{ width: '100%', maxWidth: 1180, margin: '0 auto', padding: mobile ? '20px 14px 44px' : '40px 32px 64px' }}>
@@ -788,34 +977,41 @@ function App() {
 
       {/* habit tabs */}
       <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
-        <div style={{ display: 'flex', gap: 4, background: 'var(--surface-0)', border: '1px solid var(--surface-line)', borderRadius: 999, padding: 4 }}>
-          {HABITS.map((h) => <Tab key={h.id} habit={h} active={h.id === activeId} onClick={() => setActiveId(h.id)} />)}
-        </div>
-        <button onClick={() => {}} title="Add a habit (mockup)"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '11px 16px', borderRadius: 999, cursor: 'pointer', background: 'transparent', border: '1px dashed var(--surface-line-strong)', color: 'var(--fg-3)', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 12, letterSpacing: '.08em', textTransform: 'uppercase' }}>
-          <Icon name="plus" size={15} color="var(--fg-3)" />New habit
-        </button>
+        {habits.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, background: 'var(--surface-0)', border: '1px solid var(--surface-line)', borderRadius: 999, padding: 4 }}>
+            {habits.map((h) => <Tab key={h.id} habit={h} active={h.id === activeId} onClick={() => setActiveId(h.id)} />)}
+          </div>
+        )}
+        {newHabitBtn}
       </div>
 
+      {habit ? (
+      <>
       {/* heatmap card */}
       <Card pad={mobile ? 16 : 26} style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 22 }}>
           <div style={{ width: 44, height: 44, borderRadius: 12, background: 'var(--surface-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 'none' }}>
             <Icon name={habit.icon} size={22} color={habit.accent} />
           </div>
-          <div>
+          <div style={{ minWidth: 0 }}>
             <h3 className="whoop-h3" style={{ margin: 0 }}>{habit.name}</h3>
             <div style={{ fontSize: 13, color: 'var(--fg-2)', fontWeight: 500, marginTop: 3 }}>{yearlySummary}</div>
           </div>
-          <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-            <div className="whoop-num" style={{ fontSize: 34, lineHeight: 1, color: habit.accent }}>{stats.cur}</div>
-            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)', marginTop: 2 }}>Day streak</div>
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 16 }}>
+            <button onClick={() => setModal({ habit })} title="Edit habit"
+              style={{ width: 36, height: 36, borderRadius: 10, flex: 'none', cursor: 'pointer', background: 'var(--surface-2)', border: '1px solid var(--surface-line)', color: 'var(--fg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Icon name="pencil" size={16} />
+            </button>
+            <div style={{ textAlign: 'right' }}>
+              <div className="whoop-num" style={{ fontSize: 34, lineHeight: 1, color: habit.accent }}>{stats.cur}</div>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)', marginTop: 2 }}>Day streak</div>
+            </div>
           </div>
         </div>
         <Heatmap habit={habit} data={data} weeks={displayWeeks} onSet={onSet} />
         <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 14, display: 'flex', alignItems: 'center', gap: 7 }}>
           <Icon name="pencil" size={13} color="var(--fg-3)" />
-          <span>Click any day to log {habit.type === 'binary' ? 'a workout' : 'questions'} and add a note \u00b7 hover to review</span>
+          <span>Click any day to log {habit.name} and add a note {'\u00b7'} hover to review</span>
         </div>
       </Card>
 
@@ -826,6 +1022,17 @@ function App() {
       <div style={{ marginTop: 16 }}>
         <StatsStrip habit={habit} stats={stats} />
       </div>
+      </>
+      ) : (
+        <Card pad={mobile ? 28 : 44} style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--fg-1)', marginBottom: 6 }}>{synced ? 'No habits yet' : 'Loading…'}</div>
+          {synced && <div style={{ fontSize: 13, color: 'var(--fg-3)' }}>{'Create your first habit with the New habit button above.'}</div>}
+        </Card>
+      )}
+
+      {modal && (
+        <HabitModal initial={modal.habit} onSave={saveHabit} onDelete={removeHabit} onClose={() => setModal(null)} />
+      )}
     </div>
   );
 }
