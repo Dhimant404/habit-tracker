@@ -95,6 +95,7 @@
 
   <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
 </head>
 <body>
@@ -192,58 +193,61 @@ const LC_SCALE = [
 function lcColor(n) { return LC_SCALE[Math.min(5, Math.max(0, n | 0))]; }
 const WORKOUT_GREEN = 'oklch(0.77 0.245 142)';
 
-/* Demo-data seeding */
-function mulberry32(seed) {
-  return function () {
-    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-const WORKOUT_NOTES = ['Push day — chest + triceps', 'Leg day, heavy squats', '5k tempo run', 'Upper body + core', 'Yoga & mobility', 'Back & biceps', '30-min HIIT', 'Long run 10k', 'Pool — 1500m', 'Bouldering session', 'Full-body circuit', 'Cycle + abs'];
-const LC_NOTES = ['Two Sum, Valid Anagram', 'DP: house robber', 'Graph BFS / DFS set', 'Binary search practice', 'Sliding window medium', 'Trees — inorder/level', 'Heap: top-K problems', 'Backtracking subsets', 'Greedy interval set', 'Linked-list reversal', 'Trie + word search', 'Two-pointer array set'];
+/* ============================================================
+   PERSISTENCE — Supabase backend (shared, persistent storage)
+   Data starts empty; every edit upserts/deletes a row so it
+   survives refresh for everyone, everywhere. No auth — the
+   dataset is global. Anon key + URL are safe to ship (RLS-gated).
+   ============================================================ */
+const SUPABASE_URL = 'https://wyikiuhxnldzftlatzod.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_H5DaO2EHKrg310rnu2zHGw_46nC-NT5';
+const TABLE = 'habit_entries';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-function seedData(weeks) {
-  const workout = {}, leetcode = {};
-  const rw = mulberry32(424242), rl = mulberry32(990017);
-  const flat = weeks.flat().filter(Boolean);
-  const pick = (arr, i) => arr[(i * 7) % arr.length];
-  let wPrev = 0;
-  flat.forEach((date, i) => {
-    const dow = date.getDay();
-    const weekend = dow === 0 || dow === 6;
-    let p = weekend ? 0.34 : 0.56;
-    p += wPrev ? 0.13 : -0.06;
-    const did = rw() < p;
-    wPrev = did ? 1 : 0;
-    if (did) workout[keyOf(date)] = { v: 1, note: rw() < 0.5 ? pick(WORKOUT_NOTES, i) : '' };
-    let n = Math.round((weekend ? 1.1 : 2.7) + (rl() - 0.5) * 3.6);
-    if (n < 0) n = 0; if (n > 7) n = 7;
-    if (rl() < 0.18) n = 0;
-    if (n > 0) leetcode[keyOf(date)] = { v: n, note: rl() < 0.5 ? pick(LC_NOTES, i) : '' };
+const emptyStore = () => ({ workout: {}, leetcode: {} });
+
+/* Pull the whole dataset and shape it into { habitId: { dateKey: {v,note} } } */
+async function fetchStore() {
+  const store = emptyStore();
+  const { data, error } = await sb.from(TABLE).select('habit_id, entry_date, value, note');
+  if (error) { console.error('Supabase fetch failed:', error.message); return store; }
+  (data || []).forEach((r) => {
+    if (!store[r.habit_id]) store[r.habit_id] = {};
+    store[r.habit_id][r.entry_date] = { v: r.value, note: r.note || '' };
   });
-  const wCnt = [0, 1, 1, 1, 1], lCnt = [4, 3, 5, 2, 4];
-  flat.slice(-5).forEach((date, k) => {
-    if (wCnt[k]) workout[keyOf(date)] = { v: 1, note: k % 2 ? '' : WORKOUT_NOTES[k] };
-    leetcode[keyOf(date)] = { v: lCnt[k], note: k % 2 ? '' : LC_NOTES[k] };
-  });
-  return { workout, leetcode };
+  return store;
 }
 
-/* Persistence */
-const STORE_KEY = 'whoop-habit-tracker-v2';
-function loadStore(weeks) {
-  try {
-    const raw = localStorage.getItem(STORE_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch (e) {}
-  const seeded = seedData(weeks);
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(seeded)); } catch (e) {}
-  return seeded;
+/* Persist a single cell. Cleared cells (0 value, no note) are deleted. */
+async function persistEntry(habitId, key, entry) {
+  const cleared = !entry.v && !(entry.note && entry.note.trim());
+  const res = cleared
+    ? await sb.from(TABLE).delete().eq('habit_id', habitId).eq('entry_date', key)
+    : await sb.from(TABLE).upsert(
+        { habit_id: habitId, entry_date: key, value: entry.v | 0, note: entry.note || '' },
+        { onConflict: 'habit_id,entry_date' }
+      );
+  if (res.error) console.error('Supabase save failed:', res.error.message);
+  return res;
 }
-function saveStore(data) {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); } catch (e) {}
+
+/* Fold a realtime change from another client into local state */
+function applyRealtime(prev, payload) {
+  const next = { ...prev };
+  if (payload.eventType === 'DELETE') {
+    const r = payload.old;
+    if (!r || r.habit_id == null) return prev;
+    const hd = { ...(next[r.habit_id] || {}) };
+    delete hd[r.entry_date];
+    next[r.habit_id] = hd;
+  } else {
+    const r = payload.new;
+    if (!r) return prev;
+    const hd = { ...(next[r.habit_id] || {}) };
+    hd[r.entry_date] = { v: r.value, note: r.note || '' };
+    next[r.habit_id] = hd;
+  }
+  return next;
 }
 
 /* Responsive hook */
@@ -725,21 +729,33 @@ function Tab({ habit, active, onClick }) {
 function App() {
   const today = useMemo(() => startOfDay(new Date()), []);
   const weeks = useMemo(() => buildWeeks(today), [today]);
-  const [store, setStore] = useState(() => loadStore(weeks));
+  const [store, setStore] = useState(emptyStore);
+  const [synced, setSynced] = useState(false);
   const [activeId, setActiveId] = useState('workout');
   const habit = HABITS.find((h) => h.id === activeId);
   const data = store[habit.id] || {};
   const stats = useMemo(() => computeStats(habit, data, weeks, today), [habit, data, weeks, today]);
+
+  /* Load from backend on mount + subscribe to live changes from other clients */
+  useEffect(() => {
+    let mounted = true;
+    fetchStore().then((s) => { if (mounted) { setStore(s); setSynced(true); } });
+    const channel = sb
+      .channel('habit_entries_rt')
+      .on('postgres_changes', { event: '*', schema: 'public', table: TABLE },
+        (payload) => { if (mounted) setStore((prev) => applyRealtime(prev, payload)); })
+      .subscribe();
+    return () => { mounted = false; sb.removeChannel(channel); };
+  }, []);
 
   const onSet = useCallback((key, entry) => {
     setStore((prev) => {
       const habitData = { ...(prev[activeId] || {}) };
       if (!entry.v && !(entry.note && entry.note.trim())) delete habitData[key];
       else habitData[key] = entry;
-      const next = { ...prev, [activeId]: habitData };
-      saveStore(next);
-      return next;
+      return { ...prev, [activeId]: habitData };
     });
+    persistEntry(activeId, key, entry);
   }, [activeId]);
 
   const mobile = useIsMobile();
@@ -757,9 +773,16 @@ function App() {
           <span style={{ width: 1, height: 26, background: 'var(--surface-line-strong)' }} />
           <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-2)' }}>Habit Tracker</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--fg-3)' }}>
-          <Icon name="calendar" size={15} color="var(--fg-3)" />
-          <span style={{ fontSize: 12.5, fontWeight: 600 }}>{fmtLong(today)}, {today.getFullYear()}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <span title={synced ? 'Saved to cloud' : 'Connecting to cloud…'}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: synced ? 'var(--teal)' : 'var(--fg-3)' }}>
+            <span style={{ width: 7, height: 7, borderRadius: 999, flex: 'none', background: synced ? 'var(--teal)' : 'var(--fg-disabled)', boxShadow: synced ? '0 0 8px var(--teal)' : 'none' }} />
+            {synced ? 'Synced' : 'Syncing…'}
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--fg-3)' }}>
+            <Icon name="calendar" size={15} color="var(--fg-3)" />
+            <span style={{ fontSize: 12.5, fontWeight: 600 }}>{fmtLong(today)}, {today.getFullYear()}</span>
+          </div>
         </div>
       </header>
 
