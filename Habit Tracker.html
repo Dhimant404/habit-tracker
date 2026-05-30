@@ -1183,8 +1183,12 @@ function App({ userId, email }) {
 /* ============================================================
    AUTH — email/password gate (Supabase Auth)
    ============================================================ */
+const AUTH_FIELD = { width: '100%', boxSizing: 'border-box', borderRadius: 10, background: 'var(--surface-0)', border: '1px solid var(--surface-line)', color: 'var(--fg-1)', fontFamily: 'var(--font-sans)', fontSize: 15, padding: '13px 14px', outline: 'none', marginBottom: 12 };
+const AUTH_BTN = (busy) => ({ width: '100%', padding: '14px', borderRadius: 10, cursor: busy ? 'default' : 'pointer', border: 'none', background: 'var(--teal)', color: '#04261a', fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 14, letterSpacing: '.04em', opacity: busy ? 0.7 : 1 });
+const authLink = { background: 'none', border: 'none', cursor: 'pointer', color: 'var(--teal)', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 13, padding: 0 };
+
 function AuthScreen() {
-  const [mode, setMode] = useState('signin'); // 'signin' | 'signup'
+  const [mode, setMode] = useState('signin'); // 'signin' | 'signup' | 'reset'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [err, setErr] = useState('');
@@ -1194,17 +1198,23 @@ function AuthScreen() {
   // The previous user's accent may linger on --teal; reset to default on the login screen.
   useEffect(() => { applyPrimaryColor('#00F19F'); }, []);
 
+  const go = (m) => { setMode(m); setErr(''); setMsg(''); };
+
   const submit = async (e) => {
     if (e) e.preventDefault();
     setErr(''); setMsg('');
-    if (!email.trim() || password.length < 6) { setErr('Enter an email and a password of at least 6 characters.'); return; }
+    if (!email.trim()) { setErr('Enter your email.'); return; }
+    if (mode !== 'reset' && password.length < 6) { setErr('Password must be at least 6 characters.'); return; }
     setBusy(true);
     try {
       if (mode === 'signup') {
         const { data, error } = await sb.auth.signUp({ email: email.trim(), password });
         if (error) throw error;
         if (!data.session) setMsg('Account created. Check your email to confirm, then sign in.');
-        // If a session is returned (email confirmation off), onAuthStateChange swaps to the app.
+      } else if (mode === 'reset') {
+        const { error } = await sb.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
+        if (error) throw error;
+        setMsg('If that email has an account, a password-reset link is on its way. Check your inbox.');
       } else {
         const { error } = await sb.auth.signInWithPassword({ email: email.trim(), password });
         if (error) throw error;
@@ -1213,7 +1223,8 @@ function AuthScreen() {
     setBusy(false);
   };
 
-  const field = { width: '100%', boxSizing: 'border-box', borderRadius: 10, background: 'var(--surface-0)', border: '1px solid var(--surface-line)', color: 'var(--fg-1)', fontFamily: 'var(--font-sans)', fontSize: 15, padding: '13px 14px', outline: 'none', marginBottom: 12 };
+  const subtitle = mode === 'signin' ? 'Sign in to your habits' : mode === 'signup' ? 'Create your account' : 'Reset your password';
+  const cta = mode === 'signin' ? 'Sign in' : mode === 'signup' ? 'Create account' : 'Send reset link';
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
@@ -1221,31 +1232,66 @@ function AuthScreen() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginBottom: 8 }}>
           <span style={{ fontSize: 22, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-1)' }}>Habit Tracker</span>
         </div>
-        <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--fg-3)', marginBottom: 26 }}>
-          {mode === 'signin' ? 'Sign in to your habits' : 'Create your account'}
-        </div>
+        <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--fg-3)', marginBottom: 26 }}>{subtitle}</div>
 
         <form onSubmit={submit}>
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" autoComplete="email" style={field} autoFocus />
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} style={field} />
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" autoComplete="email" style={AUTH_FIELD} autoFocus />
+          {mode !== 'reset' && (
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} style={AUTH_FIELD} />
+          )}
 
           {err && <div style={{ color: 'var(--recovery-low)', fontSize: 13, marginBottom: 12 }}>{err}</div>}
           {msg && <div style={{ color: 'var(--teal)', fontSize: 13, marginBottom: 12 }}>{msg}</div>}
 
-          <button type="submit" disabled={busy} style={{
-            width: '100%', padding: '14px', borderRadius: 10, cursor: busy ? 'default' : 'pointer', border: 'none',
-            background: 'var(--teal)', color: '#04261a', fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 14, letterSpacing: '.04em',
-            opacity: busy ? 0.7 : 1,
-          }}>{busy ? 'Please wait…' : (mode === 'signin' ? 'Sign in' : 'Create account')}</button>
+          <button type="submit" disabled={busy} style={AUTH_BTN(busy)}>{busy ? 'Please wait…' : cta}</button>
         </form>
 
-        <div style={{ textAlign: 'center', marginTop: 18, fontSize: 13, color: 'var(--fg-3)' }}>
-          {mode === 'signin' ? "No account yet? " : 'Already have an account? '}
-          <button onClick={() => { setMode(mode === 'signin' ? 'signup' : 'signin'); setErr(''); setMsg(''); }}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--teal)', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 13, padding: 0 }}>
-            {mode === 'signin' ? 'Create one' : 'Sign in'}
-          </button>
+        {mode === 'signin' && (
+          <div style={{ textAlign: 'center', marginTop: 14 }}>
+            <button onClick={() => go('reset')} style={authLink}>Forgot password?</button>
+          </div>
+        )}
+
+        <div style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: 'var(--fg-3)' }}>
+          {mode === 'signin' && <>No account yet? <button onClick={() => go('signup')} style={authLink}>Create one</button></>}
+          {mode === 'signup' && <>Already have an account? <button onClick={() => go('signin')} style={authLink}>Sign in</button></>}
+          {mode === 'reset' && <button onClick={() => go('signin')} style={authLink}>Back to sign in</button>}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* Shown after the user clicks the reset link in their email (recovery session). */
+function UpdatePasswordScreen({ onDone }) {
+  const [password, setPassword] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    if (e) e.preventDefault();
+    setErr('');
+    if (password.length < 6) { setErr('Password must be at least 6 characters.'); return; }
+    setBusy(true);
+    try {
+      const { error } = await sb.auth.updateUser({ password });
+      if (error) throw error;
+      // Clear the recovery token from the URL, then hand off to the app.
+      try { history.replaceState(null, '', window.location.pathname); } catch (e3) {}
+      onDone();
+    } catch (e2) { setErr(e2.message || 'Could not update password.'); setBusy(false); }
+  };
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div style={{ width: '100%', maxWidth: 380 }}>
+        <div style={{ textAlign: 'center', fontSize: 22, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-1)', marginBottom: 8 }}>Set a new password</div>
+        <div style={{ textAlign: 'center', fontSize: 13, color: 'var(--fg-3)', marginBottom: 26 }}>Enter a new password for your account</div>
+        <form onSubmit={submit}>
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="New password" autoComplete="new-password" style={AUTH_FIELD} autoFocus />
+          {err && <div style={{ color: 'var(--recovery-low)', fontSize: 13, marginBottom: 12 }}>{err}</div>}
+          <button type="submit" disabled={busy} style={AUTH_BTN(busy)}>{busy ? 'Please wait…' : 'Update password'}</button>
+        </form>
       </div>
     </div>
   );
@@ -1254,13 +1300,19 @@ function AuthScreen() {
 /* Top-level gate: show the app only when authenticated. */
 function Root() {
   const [session, setSession] = useState(undefined); // undefined = loading
+  const [recovery, setRecovery] = useState(false);    // true after a password-reset link
 
   useEffect(() => {
     sb.auth.getSession().then(({ data }) => setSession(data.session || null));
-    const { data: sub } = sb.auth.onAuthStateChange((_event, s) => setSession(s || null));
+    const { data: sub } = sb.auth.onAuthStateChange((event, s) => {
+      if (event === 'PASSWORD_RECOVERY') setRecovery(true);
+      if (event === 'SIGNED_OUT') setRecovery(false);
+      setSession(s || null);
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  if (recovery) return <UpdatePasswordScreen onDone={() => setRecovery(false)} />;
   if (session === undefined) {
     return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--fg-3)', fontSize: 13, fontWeight: 600, letterSpacing: '.1em', textTransform: 'uppercase' }}>Loading…</div>;
   }
