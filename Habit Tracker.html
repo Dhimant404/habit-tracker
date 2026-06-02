@@ -209,6 +209,7 @@ function Count({ value, className, style }) {
 const HT_ICONS = {
   flame:        '<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>',
   code:         '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/>',
+  refresh:      '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/>',
   plus:         '<path d="M5 12h14M12 5v14"/>',
   minus:        '<path d="M5 12h14"/>',
   check:        '<path d="M20 6 9 17l-5-5"/>',
@@ -356,6 +357,7 @@ function rowToHabit(r) {
     levels: r.levels || (r.type === 'binary' ? 1 : 5),
     unit: r.unit || 'times', icon: r.icon || 'target',
     color, sort_order: r.sort_order || 0, accent: peakColor(hueOf(color)),
+    source: r.source || null,
   };
 }
 function slugify(name) {
@@ -368,7 +370,7 @@ async function fetchHabits() {
   return (data || []).map(rowToHabit);
 }
 async function insertHabit(h, userId) {
-  const res = await sb.from(HABITS_TABLE).insert({ id: h.id, name: h.name, type: h.type, levels: h.levels, unit: h.unit, icon: h.icon, color: h.color, sort_order: h.sort_order, user_id: userId });
+  const res = await sb.from(HABITS_TABLE).insert({ id: h.id, name: h.name, type: h.type, levels: h.levels, unit: h.unit, icon: h.icon, color: h.color, sort_order: h.sort_order, source: h.source || null, user_id: userId });
   if (res.error) console.error('Habit insert failed:', res.error.message);
   return res;
 }
@@ -400,10 +402,10 @@ async function saveSettings(patch, userId) {
 
 /* ---- Coding integration (auto-sync a "Coding" habit from LeetCode) ---- */
 const CODING_TABLE = 'coding_profiles';
-const DEFAULT_CODING = { enabled: false, leetcode_username: '', last_sync_status: null, last_synced_at: null };
+const DEFAULT_CODING = { enabled: false, leetcode_username: '', gfg_username: '', leetcode_total: null, gfg_total: null, last_sync_status: null, last_synced_at: null };
 async function fetchCodingProfile() {
   // RLS scopes this to the signed-in user's single row.
-  const { data, error } = await sb.from(CODING_TABLE).select('enabled, leetcode_username, last_sync_status, last_synced_at').maybeSingle();
+  const { data, error } = await sb.from(CODING_TABLE).select('enabled, leetcode_username, gfg_username, leetcode_total, gfg_total, last_sync_status, last_synced_at').maybeSingle();
   if (error) { console.error('Coding profile fetch failed:', error.message); return { ...DEFAULT_CODING }; }
   return { ...DEFAULT_CODING, ...(data || {}) };
 }
@@ -412,13 +414,11 @@ async function saveCodingProfile(patch, userId) {
   if (res.error) console.error('Coding profile save failed:', res.error.message);
   return res;
 }
-/* Kick off an immediate LeetCode sync for the signed-in user (edge function;
+/* Kick off an immediate sync for the signed-in user (edge function;
    sb.functions.invoke attaches the user's JWT, so it syncs only this account). */
-async function triggerCodingSync(leetcodeUsername) {
+async function triggerCodingSync(body) {
   try {
-    const { data, error } = await sb.functions.invoke('sync-coding', {
-      body: leetcodeUsername ? { leetcode_username: leetcodeUsername } : {},
-    });
+    const { data, error } = await sb.functions.invoke('sync-coding', { body: body || {} });
     if (error) { console.error('Coding sync failed:', error.message); return { ok: false, error }; }
     return { ok: true, data };
   } catch (e) { console.error('Coding sync error:', e); return { ok: false, error: e }; }
@@ -964,8 +964,9 @@ function ColorPicker({ value, onChange }) {
 }
 
 /* Create / edit / delete a habit. Pure form — persistence handled by caller. */
-function HabitModal({ initial, onSave, onDelete, onClose }) {
+function HabitModal({ initial, coding, syncing, onSave, onDelete, onClose }) {
   const isEdit = !!initial;
+  const startCoding = !!(initial && initial.source === 'coding');
   const [name, setName] = useState(initial ? initial.name : '');
   const [type, setType] = useState(initial ? initial.type : 'count');
   const [levels, setLevels] = useState(initial ? (initial.levels || 5) : 5);
@@ -973,12 +974,33 @@ function HabitModal({ initial, onSave, onDelete, onClose }) {
   const [icon, setIcon] = useState(initial ? initial.icon : 'target');
   const [color, setColor] = useState(initial ? (initial.color || '#16EC06') : '#16EC06');
   const [confirmDel, setConfirmDel] = useState(false);
-  const canSave = name.trim().length > 0;
+  // Coding sync: pull current usernames from the (single) coding profile when editing.
+  const [codingOn, setCodingOn] = useState(startCoding);
+  const [leetUser, setLeetUser] = useState((coding && coding.leetcode_username) || '');
+  const [gfgUser, setGfgUser] = useState((coding && coding.gfg_username) || '');
+  const canSave = name.trim().length > 0 && (!codingOn || leetUser.trim() || gfgUser.trim());
+
+  const enableCoding = (v) => {
+    setCodingOn(v);
+    if (v) { setType('count'); if (!name.trim()) setName('Coding'); if (icon === 'target') setIcon('code'); if (color === '#16EC06') setColor('#0093E7'); }
+  };
 
   const submit = () => {
     if (!canSave) return;
-    onSave({ name: name.trim(), type, levels: type === 'count' ? levels : 1, unit: unit.trim() || 'times', icon, color });
+    const form = {
+      name: name.trim(),
+      type: codingOn ? 'count' : type,
+      levels: codingOn ? 5 : (type === 'count' ? levels : 1),
+      unit: codingOn ? 'solves' : (unit.trim() || 'times'),
+      icon, color, source: codingOn ? 'coding' : null,
+    };
+    const codingPatch = codingOn
+      ? { enabled: true, leetcode_username: leetUser.trim(), gfg_username: gfgUser.trim() }
+      : (startCoding ? { enabled: false } : null);
+    onSave(form, codingPatch);
   };
+
+  const codingTotal = (coding && ((coding.leetcode_total || 0) + (coding.gfg_total || 0))) || 0;
 
   const field = { width: '100%', boxSizing: 'border-box', borderRadius: 10, background: 'var(--surface-0)', border: '1px solid var(--surface-line)', color: 'var(--fg-1)', fontFamily: 'var(--font-sans)', fontSize: 14, padding: '11px 12px', outline: 'none' };
   const lbl = { fontSize: 11, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--fg-3)', display: 'block', marginBottom: 8 };
@@ -997,6 +1019,35 @@ function HabitModal({ initial, onSave, onDelete, onClose }) {
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Reading" maxLength={40} style={field} autoFocus />
         </div>
 
+        {/* Coding sync — auto-fill this habit from LeetCode + GeeksForGeeks. */}
+        <div style={{ marginBottom: 16, padding: 14, borderRadius: 12, background: 'var(--surface-0)', border: '1px solid var(--surface-line)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-1)' }}>Sync from coding profiles</div>
+              <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 3 }}>Auto-count unique problems solved each day.</div>
+            </div>
+            <Toggle on={codingOn} onChange={enableCoding} />
+          </div>
+          {codingOn && (
+            <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div>
+                <label style={lbl}>LeetCode username</label>
+                <input value={leetUser} onChange={(e) => setLeetUser(e.target.value)} placeholder="e.g. john_doe" autoCapitalize="off" autoCorrect="off" spellCheck={false} style={field} />
+              </div>
+              <div>
+                <label style={lbl}>GeeksforGeeks username</label>
+                <input value={gfgUser} onChange={(e) => setGfgUser(e.target.value)} placeholder="e.g. john_doe" autoCapitalize="off" autoCorrect="off" spellCheck={false} style={field} />
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--fg-3)', lineHeight: 1.5 }}>
+                Counts <b>unique problems</b> solved per day (the two platforms don't overlap). Fill either or both. Refreshed nightly; use the ↻ button on the card to refresh now.
+                {isEdit && codingTotal > 0 && <div style={{ marginTop: 6, color: 'var(--fg-2)' }}>{codingTotal} problems solved all-time{coding.leetcode_total ? ` · LeetCode ${coding.leetcode_total}` : ''}{coding.gfg_total ? ` · GFG ${coding.gfg_total}` : ''}.</div>}
+                {syncing && <div style={{ marginTop: 6, color: 'var(--teal)', fontWeight: 600 }}>Syncing…</div>}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {!codingOn && (
         <div style={{ marginBottom: 16 }}>
           <label style={lbl}>Type</label>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -1013,8 +1064,9 @@ function HabitModal({ initial, onSave, onDelete, onClose }) {
             {type === 'binary' ? 'Each day is simply done or not done.' : 'Log a number each day, shaded by intensity.'}
           </div>
         </div>
+        )}
 
-        {type === 'count' && (
+        {type === 'count' && !codingOn && (
           <div style={{ marginBottom: 16 }}>
             <label style={lbl}>Levels — {levels}</label>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -1032,10 +1084,12 @@ function HabitModal({ initial, onSave, onDelete, onClose }) {
           <ColorPicker value={color} onChange={setColor} />
         </div>
 
+        {!codingOn && (
         <div style={{ marginBottom: 16 }}>
           <label style={lbl}>Unit label</label>
           <input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder={type === 'binary' ? 'e.g. days' : 'e.g. pages, questions'} maxLength={24} style={field} />
         </div>
+        )}
 
         <div style={{ marginBottom: 20 }}>
           <label style={lbl}>Icon</label>
@@ -1081,29 +1135,17 @@ function Toggle({ on, onChange }) {
   );
 }
 
-/* App settings panel — header text + primary accent color + coding sync */
-function SettingsModal({ settings, coding, syncing, email, onSave, onSignOut, onClose }) {
+/* App settings panel — header text + primary accent color */
+function SettingsModal({ settings, email, onSave, onSignOut, onClose }) {
   const [headerText, setHeaderText] = useState(settings.header_text || 'DHIMANT');
   const [primary, setPrimary] = useState(settings.primary_color || '#00F19F');
-  const [codingOn, setCodingOn] = useState(!!(coding && coding.enabled));
-  const [leetUser, setLeetUser] = useState((coding && coding.leetcode_username) || '');
-  const syncStatus = coding && coding.last_sync_status;
-  const statusLine = !codingOn ? null
-    : syncing ? { text: 'Syncing your LeetCode activity…', color: 'var(--fg-2)' }
-    : syncStatus && syncStatus.startsWith('ok') ? { text: `Synced ${syncStatus.split(':')[1] || ''} days from LeetCode.`, color: 'var(--teal)' }
-    : syncStatus === 'user_not_found' ? { text: 'That LeetCode username wasn’t found — check it and save again.', color: 'var(--recovery-low)' }
-    : syncStatus && syncStatus.startsWith('error') ? { text: 'Last sync hit an error — it will retry tonight.', color: 'var(--recovery-low)' }
-    : null;
   const lbl = { fontSize: 11, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--fg-3)', display: 'block', marginBottom: 8 };
   const field = { width: '100%', boxSizing: 'border-box', borderRadius: 10, background: 'var(--surface-0)', border: '1px solid var(--surface-line)', color: 'var(--fg-1)', fontFamily: 'var(--font-sans)', fontSize: 14, padding: '11px 12px', outline: 'none' };
 
   // Live-preview the accent while the panel is open; caller persists on Save.
   useEffect(() => { applyPrimaryColor(primary); }, [primary]);
 
-  const submit = () => onSave(
-    { header_text: (headerText.trim() || 'DHIMANT'), primary_color: primary },
-    { enabled: codingOn, leetcode_username: leetUser.trim() },
-  );
+  const submit = () => onSave({ header_text: (headerText.trim() || 'DHIMANT'), primary_color: primary });
 
   return (
     <motion.div onClick={onClose} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
@@ -1123,24 +1165,6 @@ function SettingsModal({ settings, coding, syncing, email, onSave, onSignOut, on
           <label style={lbl}>Primary color</label>
           <ColorPicker value={primary} onChange={setPrimary} />
           <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 7 }}>The app's accent — streak, “Synced”, active tab, selected day, sliders.</div>
-        </div>
-
-        <div style={{ borderTop: '1px solid var(--surface-line)', margin: '4px 0 16px' }} />
-        <div style={{ marginBottom: 18 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-            <label style={{ ...lbl, marginBottom: 0 }}>For coding</label>
-            <Toggle on={codingOn} onChange={setCodingOn} />
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 8 }}>Auto-fill a “Coding” habit from your public LeetCode activity, refreshed every night.</div>
-          {codingOn && (
-            <div style={{ marginTop: 14 }}>
-              <label style={lbl}>LeetCode username</label>
-              <input value={leetUser} onChange={(e) => setLeetUser(e.target.value)} placeholder="e.g. john_doe"
-                autoCapitalize="off" autoCorrect="off" spellCheck={false} style={field} />
-              <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 7 }}>{'Your public profile: leetcode.com/u/<username>'}</div>
-              {statusLine && <div style={{ fontSize: 12, color: statusLine.color, marginTop: 9, fontWeight: 600 }}>{statusLine.text}</div>}
-            </div>
-          )}
         </div>
 
         <div style={{ borderTop: '1px solid var(--surface-line)', margin: '4px 0 16px' }} />
@@ -1227,30 +1251,37 @@ function App({ userId, email }) {
     return () => { mounted = false; sb.removeChannel(eChannel); sb.removeChannel(hChannel); sb.removeChannel(sChannel); sb.removeChannel(cChannel); };
   }, []);
 
-  const saveAppSettings = (patch, codingPatch) => {
+  const saveAppSettings = (patch) => {
     const next = { ...settings, ...patch };
     setSettings(next);
     applyPrimaryColor(next.primary_color);
     saveSettings(patch, userId);
-
-    if (codingPatch) {
-      const nextCoding = { ...coding, ...codingPatch };
-      setCoding(nextCoding);
-      const willSync = nextCoding.enabled && (nextCoding.leetcode_username || '').trim();
-      saveCodingProfile(codingPatch, userId).then(() => {
-        if (!willSync) return;
-        setSyncing(true);
-        triggerCodingSync(nextCoding.leetcode_username).then(() => {
-          // Pull the freshly-created Coding habit + entries (realtime also covers this).
-          Promise.all([fetchHabits(), fetchStore(), fetchCodingProfile()]).then(([hs, s, cp]) => {
-            setHabits(hs); setStore(s); setCoding(cp); setSyncing(false);
-          });
-        });
-      });
-    }
     setSettingsOpen(false);
   };
   const cancelSettings = () => { applyPrimaryColor(settings.primary_color); setSettingsOpen(false); };
+
+  /* Persist coding usernames, then run a sync and pull the fresh habit + entries. */
+  const runCodingSync = (codingPatch) => {
+    const nextCoding = { ...coding, ...codingPatch };
+    setCoding(nextCoding);
+    const willSync = nextCoding.enabled && ((nextCoding.leetcode_username || '').trim() || (nextCoding.gfg_username || '').trim());
+    saveCodingProfile(codingPatch, userId).then(() => {
+      if (!willSync) return;
+      setSyncing(true);
+      triggerCodingSync({ leetcode_username: nextCoding.leetcode_username || '', gfg_username: nextCoding.gfg_username || '' }).then(() => {
+        Promise.all([fetchHabits(), fetchStore(), fetchCodingProfile()]).then(([hs, s, cp]) => {
+          setHabits(hs); setStore(s); setCoding(cp); setSyncing(false);
+        });
+      });
+    });
+  };
+  const refreshCoding = () => {
+    if (syncing) return;
+    setSyncing(true);
+    triggerCodingSync({ leetcode_username: coding.leetcode_username || '', gfg_username: coding.gfg_username || '' }).then(() => {
+      Promise.all([fetchStore(), fetchCodingProfile()]).then(([s, cp]) => { setStore(s); setCoding(cp); setSyncing(false); });
+    });
+  };
 
   /* Keep a valid active habit selected (initial load, deletes, realtime). */
   useEffect(() => {
@@ -1267,19 +1298,21 @@ function App({ userId, email }) {
     persistEntry(activeId, key, entry, userId);
   }, [activeId, userId]);
 
-  const saveHabit = (form) => {
+  const saveHabit = (form, codingPatch) => {
     if (modal && modal.habit) {
       const id = modal.habit.id;
       const updated = rowToHabit({ ...modal.habit, ...form });
       setHabits((prev) => prev.map((h) => (h.id === id ? updated : h)));
-      updateHabit(id, { name: form.name, type: form.type, levels: form.levels, unit: form.unit, icon: form.icon, color: form.color });
+      updateHabit(id, { name: form.name, type: form.type, levels: form.levels, unit: form.unit, icon: form.icon, color: form.color, source: form.source || null });
     } else {
-      const id = slugify(form.name);
+      // A coding habit uses a deterministic id so it pairs 1:1 with the coding profile.
+      const id = form.source === 'coding' ? `coding-${userId}` : slugify(form.name);
       const sort_order = habits.length ? Math.max(...habits.map((h) => h.sort_order)) + 1 : 0;
-      setHabits((prev) => [...prev, rowToHabit({ id, ...form, sort_order })]);
+      setHabits((prev) => [...prev.filter((h) => h.id !== id), rowToHabit({ id, ...form, sort_order })]);
       setActiveId(id);
       insertHabit({ id, ...form, sort_order }, userId);
     }
+    if (codingPatch) runCodingSync(codingPatch);
     setModal(null);
   };
 
@@ -1354,6 +1387,14 @@ function App({ userId, email }) {
             <div style={{ fontSize: 13, color: 'var(--fg-2)', fontWeight: 500, marginTop: 3 }}>{yearlySummary}</div>
           </div>
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 16 }}>
+            {habit.source === 'coding' && (
+              <button onClick={refreshCoding} disabled={syncing} title={syncing ? 'Syncing…' : 'Refresh from LeetCode + GFG'}
+                style={{ width: 36, height: 36, borderRadius: 10, flex: 'none', cursor: syncing ? 'default' : 'pointer', background: 'var(--surface-2)', border: '1px solid var(--surface-line)', color: syncing ? 'var(--teal)' : 'var(--fg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <motion.span style={{ display: 'flex' }} animate={syncing ? { rotate: 360 } : { rotate: 0 }} transition={syncing ? { repeat: Infinity, duration: 0.9, ease: 'linear' } : { duration: 0 }}>
+                  <Icon name="refresh" size={16} />
+                </motion.span>
+              </button>
+            )}
             <button onClick={() => setModal({ habit })} title="Edit habit"
               style={{ width: 36, height: 36, borderRadius: 10, flex: 'none', cursor: 'pointer', background: 'var(--surface-2)', border: '1px solid var(--surface-line)', color: 'var(--fg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <Icon name="pencil" size={16} />
@@ -1388,10 +1429,10 @@ function App({ userId, email }) {
 
       <AnimatePresence>
         {modal && (
-          <HabitModal key="habit-modal" initial={modal.habit} onSave={saveHabit} onDelete={removeHabit} onClose={() => setModal(null)} />
+          <HabitModal key="habit-modal" initial={modal.habit} coding={coding} syncing={syncing} onSave={saveHabit} onDelete={removeHabit} onClose={() => setModal(null)} />
         )}
         {settingsOpen && (
-          <SettingsModal key="settings-modal" settings={settings} coding={coding} syncing={syncing} email={email} onSave={saveAppSettings} onSignOut={() => sb.auth.signOut()} onClose={cancelSettings} />
+          <SettingsModal key="settings-modal" settings={settings} email={email} onSave={saveAppSettings} onSignOut={() => sb.auth.signOut()} onClose={cancelSettings} />
         )}
       </AnimatePresence>
     </motion.div>
