@@ -527,7 +527,9 @@ function Tooltip({ habit, date, entry, rect }) {
   const valTxt = habit.type === 'binary'
     ? (val ? 'Done' : 'Not done')
     : `${val} ${unitLabel(habit, val)}`;
-  return (
+  // Portal to <body> so its fixed coordinates are viewport-relative, not
+  // confined to the heatmap card (whose backdrop-filter is a containing block).
+  const node = (
     <div style={{
       position: 'fixed', left, top, width: W, transform: 'translateY(-100%)',
       background: '#000', border: '1px solid var(--surface-line-strong)', borderRadius: 10,
@@ -543,6 +545,7 @@ function Tooltip({ habit, date, entry, rect }) {
         : <div style={{ fontSize: 12, color: 'var(--fg-disabled)', marginTop: 6, fontStyle: 'italic' }}>No note</div>}
     </div>
   );
+  return window.createPortal ? window.createPortal(node, document.body) : node;
 }
 
 /* Editor popover */
