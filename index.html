@@ -397,6 +397,32 @@ async function saveSettings(patch, userId) {
   if (res.error) console.error('Settings save failed:', res.error.message);
   return res;
 }
+
+/* ---- Coding integration (auto-sync a "Coding" habit from LeetCode) ---- */
+const CODING_TABLE = 'coding_profiles';
+const DEFAULT_CODING = { enabled: false, leetcode_username: '', last_sync_status: null, last_synced_at: null };
+async function fetchCodingProfile() {
+  // RLS scopes this to the signed-in user's single row.
+  const { data, error } = await sb.from(CODING_TABLE).select('enabled, leetcode_username, last_sync_status, last_synced_at').maybeSingle();
+  if (error) { console.error('Coding profile fetch failed:', error.message); return { ...DEFAULT_CODING }; }
+  return { ...DEFAULT_CODING, ...(data || {}) };
+}
+async function saveCodingProfile(patch, userId) {
+  const res = await sb.from(CODING_TABLE).upsert({ user_id: userId, ...patch, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+  if (res.error) console.error('Coding profile save failed:', res.error.message);
+  return res;
+}
+/* Kick off an immediate LeetCode sync for the signed-in user (edge function;
+   sb.functions.invoke attaches the user's JWT, so it syncs only this account). */
+async function triggerCodingSync(leetcodeUsername) {
+  try {
+    const { data, error } = await sb.functions.invoke('sync-coding', {
+      body: leetcodeUsername ? { leetcode_username: leetcodeUsername } : {},
+    });
+    if (error) { console.error('Coding sync failed:', error.message); return { ok: false, error }; }
+    return { ok: true, data };
+  } catch (e) { console.error('Coding sync error:', e); return { ok: false, error: e }; }
+}
 /* Recolor the app's primary accent by overriding the CSS variable used throughout. */
 function applyPrimaryColor(color) {
   if (color) document.documentElement.style.setProperty('--teal', color);
@@ -420,7 +446,7 @@ async function persistEntry(habitId, key, entry, userId) {
   const res = cleared
     ? await sb.from(TABLE).delete().eq('habit_id', habitId).eq('entry_date', key)
     : await sb.from(TABLE).upsert(
-        { habit_id: habitId, entry_date: key, value: entry.v | 0, note: entry.note || '', user_id: userId },
+        { habit_id: habitId, entry_date: key, value: entry.v | 0, note: entry.note || '', user_id: userId, source: 'manual' },
         { onConflict: 'habit_id,entry_date' }
       );
   if (res.error) console.error('Supabase save failed:', res.error.message);
@@ -1043,17 +1069,41 @@ function HabitModal({ initial, onSave, onDelete, onClose }) {
   );
 }
 
-/* App settings panel — header text + primary accent color */
-function SettingsModal({ settings, email, onSave, onSignOut, onClose }) {
+/* Small pill switch used in Settings. */
+function Toggle({ on, onChange }) {
+  return (
+    <button onClick={() => onChange(!on)} aria-pressed={on}
+      style={{ width: 46, height: 27, borderRadius: 999, flex: 'none', cursor: 'pointer', padding: 0, position: 'relative',
+        background: on ? 'var(--teal)' : 'var(--surface-3)', border: '1px solid var(--surface-line-strong)', transition: 'background .18s' }}>
+      <motion.span layout transition={SPRING}
+        style={{ position: 'absolute', top: 2, left: on ? 21 : 2, width: 21, height: 21, borderRadius: 999, background: on ? '#04261a' : '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.4)' }} />
+    </button>
+  );
+}
+
+/* App settings panel — header text + primary accent color + coding sync */
+function SettingsModal({ settings, coding, syncing, email, onSave, onSignOut, onClose }) {
   const [headerText, setHeaderText] = useState(settings.header_text || 'DHIMANT');
   const [primary, setPrimary] = useState(settings.primary_color || '#00F19F');
+  const [codingOn, setCodingOn] = useState(!!(coding && coding.enabled));
+  const [leetUser, setLeetUser] = useState((coding && coding.leetcode_username) || '');
+  const syncStatus = coding && coding.last_sync_status;
+  const statusLine = !codingOn ? null
+    : syncing ? { text: 'Syncing your LeetCode activity…', color: 'var(--fg-2)' }
+    : syncStatus && syncStatus.startsWith('ok') ? { text: `Synced ${syncStatus.split(':')[1] || ''} days from LeetCode.`, color: 'var(--teal)' }
+    : syncStatus === 'user_not_found' ? { text: 'That LeetCode username wasn’t found — check it and save again.', color: 'var(--recovery-low)' }
+    : syncStatus && syncStatus.startsWith('error') ? { text: 'Last sync hit an error — it will retry tonight.', color: 'var(--recovery-low)' }
+    : null;
   const lbl = { fontSize: 11, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--fg-3)', display: 'block', marginBottom: 8 };
   const field = { width: '100%', boxSizing: 'border-box', borderRadius: 10, background: 'var(--surface-0)', border: '1px solid var(--surface-line)', color: 'var(--fg-1)', fontFamily: 'var(--font-sans)', fontSize: 14, padding: '11px 12px', outline: 'none' };
 
   // Live-preview the accent while the panel is open; caller persists on Save.
   useEffect(() => { applyPrimaryColor(primary); }, [primary]);
 
-  const submit = () => onSave({ header_text: (headerText.trim() || 'DHIMANT'), primary_color: primary });
+  const submit = () => onSave(
+    { header_text: (headerText.trim() || 'DHIMANT'), primary_color: primary },
+    { enabled: codingOn, leetcode_username: leetUser.trim() },
+  );
 
   return (
     <motion.div onClick={onClose} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }} style={{ position: 'fixed', inset: 0, zIndex: 90, background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
@@ -1073,6 +1123,24 @@ function SettingsModal({ settings, email, onSave, onSignOut, onClose }) {
           <label style={lbl}>Primary color</label>
           <ColorPicker value={primary} onChange={setPrimary} />
           <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 7 }}>The app's accent — streak, “Synced”, active tab, selected day, sliders.</div>
+        </div>
+
+        <div style={{ borderTop: '1px solid var(--surface-line)', margin: '4px 0 16px' }} />
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <label style={{ ...lbl, marginBottom: 0 }}>For coding</label>
+            <Toggle on={codingOn} onChange={setCodingOn} />
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 8 }}>Auto-fill a “Coding” habit from your public LeetCode activity, refreshed every night.</div>
+          {codingOn && (
+            <div style={{ marginTop: 14 }}>
+              <label style={lbl}>LeetCode username</label>
+              <input value={leetUser} onChange={(e) => setLeetUser(e.target.value)} placeholder="e.g. john_doe"
+                autoCapitalize="off" autoCorrect="off" spellCheck={false} style={field} />
+              <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 7 }}>{'Your public profile: leetcode.com/u/<username>'}</div>
+              {statusLine && <div style={{ fontSize: 12, color: statusLine.color, marginTop: 9, fontWeight: 600 }}>{statusLine.text}</div>}
+            </div>
+          )}
         </div>
 
         <div style={{ borderTop: '1px solid var(--surface-line)', margin: '4px 0 16px' }} />
@@ -1126,6 +1194,8 @@ function App({ userId, email }) {
   const [modal, setModal] = useState(null); // null | { habit } (habit null => create)
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [coding, setCoding] = useState(DEFAULT_CODING);
+  const [syncing, setSyncing] = useState(false);
 
   const habit = habits.find((h) => h.id === activeId) || null;
   const data = habit ? (store[habit.id] || {}) : {};
@@ -1134,9 +1204,9 @@ function App({ userId, email }) {
   /* Load habits + entries + settings on mount; subscribe to live changes on all tables. */
   useEffect(() => {
     let mounted = true;
-    Promise.all([fetchHabits(), fetchStore(), fetchSettings()]).then(([hs, s, st]) => {
+    Promise.all([fetchHabits(), fetchStore(), fetchSettings(), fetchCodingProfile()]).then(([hs, s, st, cp]) => {
       if (!mounted) return;
-      setHabits(hs); setStore(s); setSettings(st); applyPrimaryColor(st.primary_color); setSynced(true);
+      setHabits(hs); setStore(s); setSettings(st); setCoding(cp); applyPrimaryColor(st.primary_color); setSynced(true);
     });
     const eChannel = sb.channel('habit_entries_rt')
       .on('postgres_changes', { event: '*', schema: 'public', table: TABLE },
@@ -1150,14 +1220,34 @@ function App({ userId, email }) {
       .on('postgres_changes', { event: '*', schema: 'public', table: SETTINGS_TABLE },
         () => { fetchSettings().then((st) => { if (mounted) { setSettings(st); applyPrimaryColor(st.primary_color); } }); })
       .subscribe();
-    return () => { mounted = false; sb.removeChannel(eChannel); sb.removeChannel(hChannel); sb.removeChannel(sChannel); };
+    const cChannel = sb.channel('coding_profiles_rt')
+      .on('postgres_changes', { event: '*', schema: 'public', table: CODING_TABLE },
+        () => { fetchCodingProfile().then((cp) => { if (mounted) setCoding(cp); }); })
+      .subscribe();
+    return () => { mounted = false; sb.removeChannel(eChannel); sb.removeChannel(hChannel); sb.removeChannel(sChannel); sb.removeChannel(cChannel); };
   }, []);
 
-  const saveAppSettings = (patch) => {
+  const saveAppSettings = (patch, codingPatch) => {
     const next = { ...settings, ...patch };
     setSettings(next);
     applyPrimaryColor(next.primary_color);
     saveSettings(patch, userId);
+
+    if (codingPatch) {
+      const nextCoding = { ...coding, ...codingPatch };
+      setCoding(nextCoding);
+      const willSync = nextCoding.enabled && (nextCoding.leetcode_username || '').trim();
+      saveCodingProfile(codingPatch, userId).then(() => {
+        if (!willSync) return;
+        setSyncing(true);
+        triggerCodingSync(nextCoding.leetcode_username).then(() => {
+          // Pull the freshly-created Coding habit + entries (realtime also covers this).
+          Promise.all([fetchHabits(), fetchStore(), fetchCodingProfile()]).then(([hs, s, cp]) => {
+            setHabits(hs); setStore(s); setCoding(cp); setSyncing(false);
+          });
+        });
+      });
+    }
     setSettingsOpen(false);
   };
   const cancelSettings = () => { applyPrimaryColor(settings.primary_color); setSettingsOpen(false); };
@@ -1301,7 +1391,7 @@ function App({ userId, email }) {
           <HabitModal key="habit-modal" initial={modal.habit} onSave={saveHabit} onDelete={removeHabit} onClose={() => setModal(null)} />
         )}
         {settingsOpen && (
-          <SettingsModal key="settings-modal" settings={settings} email={email} onSave={saveAppSettings} onSignOut={() => sb.auth.signOut()} onClose={cancelSettings} />
+          <SettingsModal key="settings-modal" settings={settings} coding={coding} syncing={syncing} email={email} onSave={saveAppSettings} onSignOut={() => sb.auth.signOut()} onClose={cancelSettings} />
         )}
       </AnimatePresence>
     </motion.div>
