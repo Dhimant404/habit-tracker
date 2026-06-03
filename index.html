@@ -423,6 +423,32 @@ async function triggerCodingSync(body) {
     return { ok: true, data };
   } catch (e) { console.error('Coding sync error:', e); return { ok: false, error: e }; }
 }
+/* Per-day per-platform breakdown for the coding habit: { 'YYYY-MM-DD': {leetcode, gfg, manual} }. */
+const CODING_DAILY_TABLE = 'coding_daily';
+async function fetchCodingDaily() {
+  const out = {};
+  const { data, error } = await sb.from(CODING_DAILY_TABLE).select('platform, day, solved');
+  if (error) { console.error('Coding daily fetch failed:', error.message); return out; }
+  (data || []).forEach((r) => {
+    if (!out[r.day]) out[r.day] = { leetcode: 0, gfg: 0, manual: 0 };
+    out[r.day][r.platform] = r.solved;
+  });
+  return out;
+}
+/* Write/clear the user-added manual component for one day. */
+async function saveCodingManual(userId, day, manual) {
+  const res = manual === 0
+    ? await sb.from(CODING_DAILY_TABLE).delete().eq('user_id', userId).eq('platform', 'manual').eq('day', day)
+    : await sb.from(CODING_DAILY_TABLE).upsert({ user_id: userId, platform: 'manual', day, solved: manual, updated_at: new Date().toISOString() }, { onConflict: 'user_id,platform,day' });
+  if (res.error) console.error('Coding manual save failed:', res.error.message);
+  return res;
+}
+/* Note for a coding day lives on the (trigger-materialized) habit_entries row. */
+async function saveCodingNote(habitId, day, note) {
+  const res = await sb.from(TABLE).update({ note: note || '' }).eq('habit_id', habitId).eq('entry_date', day);
+  if (res.error) console.error('Coding note save failed:', res.error.message);
+  return res;
+}
 /* Recolor the app's primary accent by overriding the CSS variable used throughout. */
 function applyPrimaryColor(color) {
   if (color) document.documentElement.style.setProperty('--teal', color);
@@ -518,12 +544,14 @@ function monthLabels(weeks) {
 }
 
 /* Tooltip */
-function Tooltip({ habit, date, entry, rect }) {
+function Tooltip({ habit, date, entry, breakdown, rect }) {
   if (!rect) return null;
-  const W = 200;
+  const W = 210;
   const left = Math.min(window.innerWidth - W - 8, Math.max(8, rect.left + rect.width / 2 - W / 2));
   const top = rect.top - 12;
   const val = entry ? entry.v : 0;
+  const isCoding = habit.source === 'coding';
+  const bd = breakdown || { leetcode: 0, gfg: 0, manual: 0 };
   const valTxt = habit.type === 'binary'
     ? (val ? 'Done' : 'Not done')
     : `${val} ${unitLabel(habit, val)}`;
@@ -540,7 +568,13 @@ function Tooltip({ habit, date, entry, rect }) {
         <span style={{ width: 9, height: 9, borderRadius: 2, background: cellColor(habit, entry), flex: 'none' }} />
         <span className="whoop-num" style={{ fontSize: 15, color: val ? '#fff' : 'var(--fg-3)' }}>{valTxt}</span>
       </div>
-      {entry && entry.note
+      {isCoding ? (
+        <div style={{ marginTop: 7, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12, color: 'var(--fg-2)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>LeetCode</span><span className="whoop-num">{bd.leetcode || 0}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>GeeksforGeeks</span><span className="whoop-num">{bd.gfg || 0}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Manual</span><span className="whoop-num">{(bd.manual || 0) > 0 ? '+' : ''}{bd.manual || 0}</span></div>
+        </div>
+      ) : entry && entry.note
         ? <div style={{ fontSize: 12, color: 'var(--fg-2)', marginTop: 6, lineHeight: 1.35 }}>{entry.note}</div>
         : <div style={{ fontSize: 12, color: 'var(--fg-disabled)', marginTop: 6, fontStyle: 'italic' }}>No note</div>}
     </div>
@@ -565,7 +599,7 @@ function RoundBtn({ icon, onClick, disabled }) {
   );
 }
 
-function Editor({ habit, date, entry, onChange, onClose }) {
+function Editor({ habit, date, entry, breakdown, onChange, onManual, onNote, onClose }) {
   // Close on Escape for keyboard users.
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -573,11 +607,28 @@ function Editor({ habit, date, entry, onChange, onClose }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  const isCoding = habit.source === 'coding';
+  // Coding habit: total = leetcode + gfg + manual; the +/- adjusts only manual.
+  const bd = breakdown || { leetcode: 0, gfg: 0, manual: 0 };
+  const lc = bd.leetcode || 0, gfg = bd.gfg || 0, manual = bd.manual || 0;
+  const auto = lc + gfg;
+
   const maxV = habit.type === 'binary' ? 1 : (habit.levels || 5);
-  const v = entry ? entry.v : 0;
+  const v = isCoding ? (auto + manual) : (entry ? entry.v : 0);
   const note = entry ? entry.note || '' : '';
+  const key = keyOf(date);
   const setV = (nv) => onChange({ v: Math.min(maxV, Math.max(0, nv)), note });
-  const setNote = (nn) => onChange({ v, note: nn });
+  const setNote = (nn) => (isCoding ? onNote(key, nn) : onChange({ v, note: nn }));
+  // Manual adjusts up without limit; down only until the day's total hits 0.
+  const bumpManual = (delta) => onManual(key, Math.max(manual + delta, -auto), auto);
+  const srcRow = (label, val, color) => (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 13 }}>
+      <span style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--fg-2)' }}>
+        <span style={{ width: 8, height: 8, borderRadius: 2, background: color, flex: 'none' }} />{label}
+      </span>
+      <span className="whoop-num" style={{ fontSize: 16, color: 'var(--fg-1)' }}>{val}</span>
+    </div>
+  );
 
   // Rendered through a portal to <body> so it escapes the heatmap Card's
   // backdrop-filter containing block — a centered, full-viewport modal that
@@ -594,7 +645,24 @@ function Editor({ habit, date, entry, onChange, onClose }) {
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--fg-3)', padding: 2, display: 'flex' }}><Icon name="x" size={18} /></button>
         </div>
 
-        {habit.type === 'binary' ? (
+        {isCoding ? (
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, marginBottom: 16 }}>
+              <RoundBtn icon="minus" onClick={() => bumpManual(-1)} disabled={v <= 0} />
+              <div style={{ textAlign: 'center', minWidth: 96, flex: 1 }}>
+                <div className="whoop-num" style={{ fontSize: 52, lineHeight: 1, color: v ? cellColor(habit, { v }) : 'var(--fg-3)' }}>{v}</div>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)', marginTop: 4 }}>{unitLabel(habit, v)}</div>
+              </div>
+              <RoundBtn icon="plus" onClick={() => bumpManual(1)} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 9, padding: '13px 14px', borderRadius: 12, background: 'var(--surface-0)', border: '1px solid var(--surface-line)' }}>
+              {srcRow('LeetCode', lc, '#FFA116')}
+              {srcRow('GeeksforGeeks', gfg, '#2F8D46')}
+              {srcRow('Manual', (manual > 0 ? '+' : '') + manual, 'var(--teal)')}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--fg-3)', marginTop: 8, textAlign: 'center' }}>{'+/− adjusts your manual count; LeetCode & GFG sync automatically.'}</div>
+          </div>
+        ) : habit.type === 'binary' ? (
           <button onClick={() => setV(v ? 0 : 1)} style={{
             width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9,
             padding: '15px', borderRadius: 12, cursor: 'pointer', transition: 'all .15s',
@@ -633,7 +701,7 @@ function Editor({ habit, date, entry, onChange, onClose }) {
 }
 
 /* Heatmap grid */
-function Heatmap({ habit, data, weeks, onSet }) {
+function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCodingNote }) {
   const [hover, setHover] = useState(null);
   const [sel, setSel] = useState(null);
   const scrollRef = useRef(null);
@@ -719,11 +787,13 @@ function Heatmap({ habit, data, weeks, onSet }) {
         </div>
       </div>
 
-      {hover && !sel && <Tooltip habit={habit} date={hover.date} entry={data[hover.key]} rect={hover.rect} />}
+      {hover && !sel && <Tooltip habit={habit} date={hover.date} entry={data[hover.key]} breakdown={codingDaily && codingDaily[hover.key]} rect={hover.rect} />}
       <AnimatePresence>
         {sel && (
           <Editor key="cell-editor" habit={habit} date={sel.date} entry={data[sel.key]}
-            onChange={(e) => onSet(sel.key, e)} onClose={() => setSel(null)} />
+            breakdown={codingDaily && codingDaily[sel.key]}
+            onChange={(e) => onSet(sel.key, e)} onManual={onCodingManual} onNote={onCodingNote}
+            onClose={() => setSel(null)} />
         )}
       </AnimatePresence>
     </div>
@@ -1222,6 +1292,7 @@ function App({ userId, email }) {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [coding, setCoding] = useState(DEFAULT_CODING);
+  const [codingDaily, setCodingDaily] = useState({}); // { 'YYYY-MM-DD': {leetcode,gfg,manual} }
   const [syncing, setSyncing] = useState(false);
 
   const habit = habits.find((h) => h.id === activeId) || null;
@@ -1231,9 +1302,9 @@ function App({ userId, email }) {
   /* Load habits + entries + settings on mount; subscribe to live changes on all tables. */
   useEffect(() => {
     let mounted = true;
-    Promise.all([fetchHabits(), fetchStore(), fetchSettings(), fetchCodingProfile()]).then(([hs, s, st, cp]) => {
+    Promise.all([fetchHabits(), fetchStore(), fetchSettings(), fetchCodingProfile(), fetchCodingDaily()]).then(([hs, s, st, cp, cd]) => {
       if (!mounted) return;
-      setHabits(hs); setStore(s); setSettings(st); setCoding(cp); applyPrimaryColor(st.primary_color); setSynced(true);
+      setHabits(hs); setStore(s); setSettings(st); setCoding(cp); setCodingDaily(cd); applyPrimaryColor(st.primary_color); setSynced(true);
     });
     const eChannel = sb.channel('habit_entries_rt')
       .on('postgres_changes', { event: '*', schema: 'public', table: TABLE },
@@ -1251,7 +1322,11 @@ function App({ userId, email }) {
       .on('postgres_changes', { event: '*', schema: 'public', table: CODING_TABLE },
         () => { fetchCodingProfile().then((cp) => { if (mounted) setCoding(cp); }); })
       .subscribe();
-    return () => { mounted = false; sb.removeChannel(eChannel); sb.removeChannel(hChannel); sb.removeChannel(sChannel); sb.removeChannel(cChannel); };
+    const cdChannel = sb.channel('coding_daily_rt')
+      .on('postgres_changes', { event: '*', schema: 'public', table: CODING_DAILY_TABLE },
+        () => { fetchCodingDaily().then((cd) => { if (mounted) setCodingDaily(cd); }); })
+      .subscribe();
+    return () => { mounted = false; sb.removeChannel(eChannel); sb.removeChannel(hChannel); sb.removeChannel(sChannel); sb.removeChannel(cChannel); sb.removeChannel(cdChannel); };
   }, []);
 
   const saveAppSettings = (patch) => {
@@ -1272,8 +1347,8 @@ function App({ userId, email }) {
       if (!willSync) return;
       setSyncing(true);
       triggerCodingSync({ leetcode_username: nextCoding.leetcode_username || '', gfg_username: nextCoding.gfg_username || '' }).then(() => {
-        Promise.all([fetchHabits(), fetchStore(), fetchCodingProfile()]).then(([hs, s, cp]) => {
-          setHabits(hs); setStore(s); setCoding(cp); setSyncing(false);
+        Promise.all([fetchHabits(), fetchStore(), fetchCodingProfile(), fetchCodingDaily()]).then(([hs, s, cp, cd]) => {
+          setHabits(hs); setStore(s); setCoding(cp); setCodingDaily(cd); setSyncing(false);
         });
       });
     });
@@ -1282,9 +1357,31 @@ function App({ userId, email }) {
     if (syncing) return;
     setSyncing(true);
     triggerCodingSync({ leetcode_username: coding.leetcode_username || '', gfg_username: coding.gfg_username || '' }).then(() => {
-      Promise.all([fetchStore(), fetchCodingProfile()]).then(([s, cp]) => { setStore(s); setCoding(cp); setSyncing(false); });
+      Promise.all([fetchStore(), fetchCodingProfile(), fetchCodingDaily()]).then(([s, cp, cd]) => { setStore(s); setCoding(cp); setCodingDaily(cd); setSyncing(false); });
     });
   };
+
+  /* Adjust the manual component of a coding day (optimistic; trigger recomputes the heatmap). */
+  const onCodingManual = useCallback((key, newManual, autoSum) => {
+    setCodingDaily((prev) => ({ ...prev, [key]: { ...(prev[key] || { leetcode: 0, gfg: 0, manual: 0 }), manual: newManual } }));
+    const total = autoSum + newManual;
+    setStore((prev) => {
+      const hd = { ...(prev[activeId] || {}) };
+      if (total > 0) hd[key] = { v: total, note: (hd[key] && hd[key].note) || '' };
+      else delete hd[key];
+      return { ...prev, [activeId]: hd };
+    });
+    saveCodingManual(userId, key, newManual);
+  }, [activeId, userId]);
+
+  const onCodingNote = useCallback((key, note) => {
+    setStore((prev) => {
+      const hd = { ...(prev[activeId] || {}) };
+      if (hd[key]) hd[key] = { ...hd[key], note };
+      return { ...prev, [activeId]: hd };
+    });
+    saveCodingNote(activeId, key, note);
+  }, [activeId]);
 
   /* Keep a valid active habit selected (initial load, deletes, realtime). */
   useEffect(() => {
@@ -1408,7 +1505,8 @@ function App({ userId, email }) {
             </div>
           </div>
         </div>
-        <Heatmap habit={habit} data={data} weeks={displayWeeks} onSet={onSet} />
+        <Heatmap habit={habit} data={data} weeks={displayWeeks} onSet={onSet}
+          codingDaily={habit.source === 'coding' ? codingDaily : null} onCodingManual={onCodingManual} onCodingNote={onCodingNote} />
         <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 14, display: 'flex', alignItems: 'center', gap: 7 }}>
           <Icon name="pencil" size={13} color="var(--fg-3)" />
           <span>Click any day to log {habit.name} and add a note {'\u00b7'} hover to review</span>
