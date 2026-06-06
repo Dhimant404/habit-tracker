@@ -1548,7 +1548,7 @@ function App({ userId, email }) {
 /* ============================================================
    AUTH — email/password gate (Supabase Auth)
    ============================================================ */
-const AUTH_ACCENT = '#00F19F';
+const AUTH_ACCENT = '#16EC06';
 
 // Pulsing-heatmap keyframes for the brand panel (injected once).
 if (!document.getElementById('auth-keyframes')) {
@@ -1618,7 +1618,7 @@ function StreakBadge({ accent }) {
   }, []);
   return (
     <div style={{ display: 'inline-flex', alignItems: 'center', gap: 12, padding: '11px 18px 11px 14px', borderRadius: 999, background: 'rgba(10,14,17,0.55)', border: '1px solid var(--surface-line-strong)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}>
-      <span style={{ width: 34, height: 34, borderRadius: 999, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,241,159,0.14)' }}>
+      <span style={{ width: 34, height: 34, borderRadius: 999, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(22,236,6,0.14)' }}>
         <Icon name="flame" size={18} color={accent} stroke={2.2} />
       </span>
       <div style={{ lineHeight: 1 }}>
@@ -1707,8 +1707,8 @@ function AuthShell({ head, sub, mobile, children }) {
 }
 
 const AUTH_HERO = {
-  signin: { head: ["DON'T BREAK", 'THE CHAIN'], sub: 'Every day you show up, the streak grows. Sign back in and keep the momentum alive.' },
-  signup: { head: ['BUILD THE', 'DAILY WIN'], sub: 'Small reps, stacked daily. Start tracking the habits that move you.' },
+  signin: { head: ['BUILD THE', 'DAILY WIN'], sub: 'Small reps, stacked daily. Track the habits that move your recovery and strain.' },
+  signup: { head: ['BUILD THE', 'DAILY WIN'], sub: 'Small reps, stacked daily. Track the habits that move your recovery and strain.' },
   reset:  { head: ['RESET &', 'RESUME'], sub: 'It happens to everyone. We will email you a secure link to set a new password.' },
 };
 
@@ -1726,7 +1726,7 @@ function AuthScreen() {
   const [btnHover, setBtnHover] = useState(false);
 
   // The previous user's accent may linger on --teal; reset to default on the login screen.
-  useEffect(() => { applyPrimaryColor('#00F19F'); }, []);
+  useEffect(() => { applyPrimaryColor('#16EC06'); }, []);
 
   const go = (m) => { setMode(m); setErr(''); setMsg(''); };
   const social = () => { setMsg(''); setErr("Google and Apple sign-in aren't available yet. Please use your email and password for now."); };
@@ -1836,7 +1836,7 @@ function UpdatePasswordScreen({ onDone }) {
   const [busy, setBusy] = useState(false);
   const [btnHover, setBtnHover] = useState(false);
 
-  useEffect(() => { applyPrimaryColor('#00F19F'); }, []);
+  useEffect(() => { applyPrimaryColor('#16EC06'); }, []);
 
   const submit = async (e) => {
     if (e) e.preventDefault();
