@@ -1646,9 +1646,6 @@ function AuthField({ icon, type, placeholder, value, onChange, accent, trailing,
   );
 }
 
-function AppleGlyph() {
-  return (<svg width="17" height="17" viewBox="0 0 24 24" fill="#fff" style={{ display: 'block' }}><path d="M16.36 12.78c.02 2.5 2.2 3.33 2.22 3.34-.02.06-.35 1.2-1.15 2.37-.69 1.02-1.41 2.03-2.54 2.05-1.11.02-1.47-.66-2.74-.66-1.27 0-1.66.64-2.71.68-1.09.04-1.92-1.1-2.62-2.12-1.43-2.07-2.52-5.85-1.05-8.4.73-1.27 2.03-2.07 3.45-2.09 1.07-.02 2.08.72 2.74.72.66 0 1.89-.89 3.18-.76.54.02 2.06.22 3.03 1.64-.08.05-1.81 1.06-1.79 3.16M14.3 4.7c.58-.7.97-1.68.86-2.66-.83.04-1.84.56-2.44 1.26-.54.62-1.01 1.61-.88 2.57.93.07 1.88-.47 2.46-1.17"/></svg>);
-}
 function GoogleGlyph() {
   return (<svg width="17" height="17" viewBox="0 0 24 24" style={{ display: 'block' }}><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.65l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0 0 12 23z"/><path fill="#FBBC05" d="M5.84 14.1a6.6 6.6 0 0 1 0-4.2V7.06H2.18a11 11 0 0 0 0 9.88z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84C6.71 7.31 9.14 5.38 12 5.38z"/></svg>);
 }
@@ -1656,7 +1653,7 @@ function AuthSocialBtn({ label, glyph, onClick }) {
   const [h, setH] = useState(false);
   return (
     <button type="button" onClick={onClick} onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
-      style={{ height: 50, borderRadius: 'var(--radius-md)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, background: h ? 'var(--surface-3)' : 'var(--surface-2)', border: '1px solid var(--surface-line)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 14, transition: 'background .15s' }}>
+      style={{ width: '100%', height: 50, borderRadius: 'var(--radius-md)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, background: h ? 'var(--surface-3)' : 'var(--surface-2)', border: '1px solid var(--surface-line)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 14, transition: 'background .15s' }}>
       {glyph}{label}
     </button>
   );
@@ -1729,9 +1726,8 @@ function AuthScreen() {
   useEffect(() => { applyPrimaryColor('#16EC06'); }, []);
 
   const go = (m) => { setMode(m); setErr(''); setMsg(''); };
-  const social = async (provider) => {
+  const social = async () => {
     setMsg(''); setErr('');
-    if (provider !== 'google') { setErr("Apple sign-in isn't available yet. Please use Google or your email and password."); return; }
     setBusy(true);
     const { error } = await sb.auth.signInWithOAuth({
       provider: 'google',
@@ -1819,10 +1815,7 @@ function AuthScreen() {
             <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>or</span>
             <span style={{ flex: 1, height: 1, background: 'var(--surface-line)' }} />
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <AuthSocialBtn label="Apple" glyph={<AppleGlyph />} onClick={() => social('apple')} />
-            <AuthSocialBtn label="Google" glyph={<GoogleGlyph />} onClick={() => social('google')} />
-          </div>
+          <AuthSocialBtn label="Continue with Google" glyph={<GoogleGlyph />} onClick={social} />
         </>
       )}
 
