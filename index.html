@@ -2,8 +2,11 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#070a0c">
   <title>Habit Tracker</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23070a0c'/%3E%3Crect x='11' y='11' width='19' height='19' rx='5' fill='%2316EC06' opacity='.35'/%3E%3Crect x='34' y='11' width='19' height='19' rx='5' fill='%2316EC06' opacity='.7'/%3E%3Crect x='11' y='34' width='19' height='19' rx='5' fill='%2316EC06' opacity='.5'/%3E%3Crect x='34' y='34' width='19' height='19' rx='5' fill='%2316EC06'/%3E%3C/svg%3E">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
   <!-- Google Fonts (substitutes for Proxima Nova + DINPro) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -85,15 +88,18 @@
 
     /* Base */
     html, body { margin: 0; min-height: 100%; }
+    html { background: #070a0c; }   /* Safari paints overscroll + chrome from this — keep it dark */
     body {
       background: var(--app-bg);
       background-attachment: fixed;
       min-height: 100vh;
+      min-height: 100dvh;
       font-family: var(--font-sans);
       color: var(--fg-1);
       -webkit-font-smoothing: antialiased;
     }
     * { box-sizing: border-box; }
+    ::selection { background: rgba(22, 236, 6, 0.28); }
     textarea::placeholder { color: var(--fg-disabled); }
     ::-webkit-scrollbar { height: 8px; width: 8px; }
     ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 999px; }
@@ -1563,7 +1569,8 @@ if (!document.getElementById('auth-keyframes')) {
     '.auth-cta:focus-visible,.auth-ghost-btn:focus-visible{outline:2px solid #16EC06;outline-offset:3px;}',
     '.auth-ghost-btn{transition:background .2s ease, border-color .2s ease, transform .18s cubic-bezier(.32,.72,0,1);}',
     '.auth-ghost-btn:active{transform:scale(.985);}',
-    '.auth-card-inner input::placeholder{color:rgba(255,255,255,0.4);font-weight:500;}',
+    '.auth-card-inner input::placeholder{color:rgba(255,255,255,0.45);font-weight:500;}',
+    '.auth-card-inner input:-webkit-autofill,.auth-card-inner input:-webkit-autofill:hover,.auth-card-inner input:-webkit-autofill:focus{-webkit-box-shadow:0 0 0 1000px #10161a inset;-webkit-text-fill-color:#fff;caret-color:#fff;border-radius:0;transition:background-color 99999s ease-in-out 0s;}',
     '@media (prefers-reduced-motion: reduce){[style*="cellPulse"]{animation:none!important;}.auth-orb{animation:none!important;}}',
   ].join('');
   document.head.appendChild(_s);
@@ -1605,13 +1612,54 @@ function StreakGrid({ accent }) {
     return out;
   }, []);
   const ramp = { 1: 0.26, 2: 0.46, 3: 0.7, 4: 1 };
+
+  /* Press-into-the-surface hover: cells near the cursor sink, dim, and displace outward
+     with a smoothstep falloff. Imperative DOM writes (one rAF per mousemove) so all
+     420 cells react at 60fps without React re-renders. */
+  const wrapRef = useRef(null);
+  const gridRef = useRef(null);
+  useEffect(() => {
+    if (AUTH_REDUCE_MOTION) return;
+    const wrap = wrapRef.current, grid = gridRef.current;
+    if (!wrap || !grid) return;
+    const host = wrap.parentElement || wrap;      // whole brand panel presses the surface
+    const nodes = Array.from(grid.children);
+    let centers = null, mouse = null, raf = 0;
+    const measure = () => { centers = nodes.map((n) => { const r = n.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }); };
+    const unmeasure = () => { centers = null; };
+    const R = 160;                                 // press radius (px)
+    const apply = () => {
+      raf = 0;
+      if (!centers) measure();
+      for (let i = 0; i < nodes.length; i++) {
+        const st = nodes[i].style;
+        if (!mouse) { if (st.transform) { st.transform = ''; st.filter = ''; } continue; }
+        const dx = centers[i][0] - mouse[0], dy = centers[i][1] - mouse[1];
+        const d = Math.hypot(dx, dy);
+        if (d >= R) { if (st.transform) { st.transform = ''; st.filter = ''; } continue; }
+        const t = 1 - d / R, s = t * t * (3 - 2 * t);
+        const push = 7 * s, ux = d ? dx / d : 0, uy = d ? dy / d : 0;
+        st.transform = `translate(${(ux * push).toFixed(2)}px, ${(uy * push).toFixed(2)}px) scale(${(1 - 0.36 * s).toFixed(3)})`;
+        st.filter = `brightness(${(1 - 0.42 * s).toFixed(3)})`;
+      }
+    };
+    const schedule = () => { if (!raf) raf = requestAnimationFrame(apply); };
+    const onMove = (e) => { mouse = [e.clientX, e.clientY]; schedule(); };
+    const onLeave = () => { mouse = null; schedule(); };
+    host.addEventListener('mousemove', onMove);
+    host.addEventListener('mouseleave', onLeave);
+    window.addEventListener('resize', unmeasure);
+    window.addEventListener('scroll', unmeasure, true);
+    return () => { host.removeEventListener('mousemove', onMove); host.removeEventListener('mouseleave', onLeave); window.removeEventListener('resize', unmeasure); window.removeEventListener('scroll', unmeasure, true); if (raf) cancelAnimationFrame(raf); };
+  }, []);
+
   return (
-    <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-      <div style={{ display: 'grid', gap: GAP, gridTemplateColumns: `repeat(${COLS}, ${CELL}px)`, gridTemplateRows: `repeat(${ROWS}, ${CELL}px)`, transform: 'rotate(-12deg) scale(1.35)', transformOrigin: 'center', opacity: 0.9 }}>
+    <div ref={wrapRef} style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+      <div ref={gridRef} style={{ display: 'grid', gap: GAP, gridTemplateColumns: `repeat(${COLS}, ${CELL}px)`, gridTemplateRows: `repeat(${ROWS}, ${CELL}px)`, transform: 'rotate(-12deg) scale(1.35)', transformOrigin: 'center', opacity: 0.9 }}>
         {cells.map((cell, i) => {
           const op = cell.level === 0 ? 1 : ramp[cell.level];
           const bg = cell.level === 0 ? 'rgba(255,255,255,0.045)' : accent;
-          return <div key={i} style={{ borderRadius: 5, background: bg, opacity: op, animation: `cellPulse 4.2s ease-in-out ${cell.wave * 0.35}s infinite`, boxShadow: cell.glow ? `0 0 14px ${accent}` : 'none', ['--baseOp']: op }} />;
+          return <div key={i} style={{ borderRadius: 5, background: bg, opacity: op, animation: `cellPulse 4.2s ease-in-out ${cell.wave * 0.35}s infinite`, boxShadow: cell.glow ? `0 0 14px ${accent}` : 'none', ['--baseOp']: op, transition: 'transform .3s cubic-bezier(.25,.6,.3,1), filter .3s ease' }} />;
         })}
       </div>
     </div>
@@ -1656,7 +1704,7 @@ function AuthField({ icon, type, placeholder, value, onChange, accent, trailing,
       </span>
       <input type={type} placeholder={placeholder} value={value} autoComplete={autoComplete} autoFocus={autoFocus}
         onChange={(e) => onChange(e.target.value)} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
-        style={{ flex: 1, minWidth: 0, height: '100%', border: 'none', outline: 'none', background: 'transparent', color: 'var(--fg-1)', fontSize: 15.5, fontWeight: 600, letterSpacing: '.01em' }} />
+        style={{ flex: 1, minWidth: 0, height: '100%', border: 'none', outline: 'none', background: 'transparent', color: 'var(--fg-1)', fontSize: 16, fontWeight: 600, letterSpacing: '.01em' }} />
       {trailing}
     </label>
   );
@@ -1696,7 +1744,7 @@ function AuthSocialBtn({ label, glyph, onClick }) {
 function AuthBrandPanel({ head, sub, mobile }) {
   const accent = AUTH_ACCENT;
   return (
-    <section style={{ position: 'relative', flex: mobile ? 'none' : '1 1 56%', overflow: 'hidden', background: 'radial-gradient(130% 120% at 18% 12%, #131c18 0%, #090d0f 52%, #050708 100%)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', padding: mobile ? '28px 24px' : '46px 54px', minWidth: 0, minHeight: mobile ? 300 : 'auto' }}>
+    <section style={{ position: 'relative', flex: mobile ? 'none' : '1 1 56%', overflow: 'hidden', background: 'radial-gradient(130% 120% at 18% 12%, #131c18 0%, #090d0f 52%, #050708 100%)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', padding: mobile ? 'calc(28px + env(safe-area-inset-top)) 24px 28px' : '46px 54px', minWidth: 0, minHeight: mobile ? 300 : 'auto' }}>
       <StreakGrid accent={accent} />
       <div className="auth-orb" style={{ width: 480, height: 480, left: '-8%', bottom: '-14%', background: `radial-gradient(circle, ${accent}17 0%, transparent 65%)` }} />
       <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', background: 'linear-gradient(180deg, rgba(5,7,8,0.6) 0%, rgba(5,7,8,0.12) 30%, rgba(5,7,8,0.4) 62%, rgba(5,7,8,0.94) 100%)' }} />
@@ -1704,6 +1752,12 @@ function AuthBrandPanel({ head, sub, mobile }) {
 
       {/* top: logo */}
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 14 }}>
+        <svg width="22" height="22" viewBox="0 0 64 64" aria-hidden="true" style={{ display: 'block', flex: 'none', filter: 'drop-shadow(0 0 10px rgba(22,236,6,0.35))' }}>
+          <rect x="8" y="8" width="22" height="22" rx="6" fill="#16EC06" opacity="0.35" />
+          <rect x="34" y="8" width="22" height="22" rx="6" fill="#16EC06" opacity="0.7" />
+          <rect x="8" y="34" width="22" height="22" rx="6" fill="#16EC06" opacity="0.5" />
+          <rect x="34" y="34" width="22" height="22" rx="6" fill="#16EC06" />
+        </svg>
         <span style={{ fontSize: 13, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', color: '#fff' }}>Habit Tracker</span>
         <span style={{ width: 1, height: 22, background: 'var(--surface-line-strong)' }} />
         <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '.04em', color: 'var(--fg-2)', whiteSpace: 'nowrap' }}>By Dhimant</span>
@@ -1728,9 +1782,9 @@ function AuthBrandPanel({ head, sub, mobile }) {
 /* Split-screen shell: brand panel + form panel (children). */
 function AuthShell({ head, sub, mobile, children }) {
   return (
-    <div style={{ display: 'flex', flexDirection: mobile ? 'column' : 'row', width: '100%', minHeight: '100vh', overflow: mobile ? 'visible' : 'hidden' }}>
+    <div style={{ display: 'flex', flexDirection: mobile ? 'column' : 'row', width: '100%', minHeight: '100dvh', overflow: mobile ? 'visible' : 'hidden' }}>
       <AuthBrandPanel head={head} sub={sub} mobile={mobile} />
-      <section style={{ position: 'relative', flex: mobile ? 'none' : '1 1 44%', minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', background: 'radial-gradient(120% 100% at 85% 0%, #0b1210 0%, #070a0c 45%, #050708 100%)', borderLeft: mobile ? 'none' : '1px solid rgba(255,255,255,0.06)', borderTop: mobile ? '1px solid rgba(255,255,255,0.06)' : 'none', padding: mobile ? '36px 20px 44px' : '40px 32px' }}>
+      <section style={{ position: 'relative', flex: mobile ? 'none' : '1 1 44%', minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', background: 'radial-gradient(120% 100% at 85% 0%, #0b1210 0%, #070a0c 45%, #050708 100%)', borderLeft: mobile ? 'none' : '1px solid rgba(255,255,255,0.06)', borderTop: mobile ? '1px solid rgba(255,255,255,0.06)' : 'none', padding: mobile ? '36px 20px calc(44px + env(safe-area-inset-bottom))' : '40px 32px' }}>
         <div className="auth-orb" style={{ width: 420, height: 420, right: '-18%', top: '-12%', background: `radial-gradient(circle, ${AUTH_ACCENT}14 0%, transparent 65%)`, animationDelay: '-11s' }} />
         <div className="auth-orb" style={{ width: 360, height: 360, left: '-16%', bottom: '-16%', background: 'radial-gradient(circle, rgba(64,190,255,0.07) 0%, transparent 65%)', animationDelay: '-5s' }} />
         <AuthReveal delay={120} style={{ position: 'relative', width: '100%', maxWidth: 428 }}>
@@ -1822,7 +1876,7 @@ function AuthScreen() {
             autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
             trailing={
               <button type="button" onClick={() => setShow((s) => !s)} aria-label={show ? 'Hide password' : 'Show password'}
-                style={{ display: 'flex', padding: 4, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--fg-3)' }}>
+                style={{ display: 'flex', padding: 10, margin: -6, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--fg-3)' }}>
                 <Icon name={show ? 'eye-off' : 'eye'} size={19} color="var(--fg-3)" stroke={1.9} />
               </button>
             } />
@@ -1904,7 +1958,7 @@ function UpdatePasswordScreen({ onDone }) {
         <AuthField icon="lock" type={show ? 'text' : 'password'} placeholder="New password" value={password} onChange={setPassword} accent={accent} autoComplete="new-password" autoFocus
           trailing={
             <button type="button" onClick={() => setShow((s) => !s)} aria-label={show ? 'Hide password' : 'Show password'}
-              style={{ display: 'flex', padding: 4, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--fg-3)' }}>
+              style={{ display: 'flex', padding: 10, margin: -6, border: 'none', background: 'transparent', cursor: 'pointer', color: 'var(--fg-3)' }}>
               <Icon name={show ? 'eye-off' : 'eye'} size={19} color="var(--fg-3)" stroke={1.9} />
             </button>
           } />
