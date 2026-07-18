@@ -32,9 +32,9 @@
       --sleep:          #7BA1BB;
       --recovery-blue:  #67AEE6;
 
-      --bg-grad-top:    #1e272d;
-      --bg-grad-bottom: #090c0f;
-      --app-bg: radial-gradient(135% 120% at 50% -10%, #212b31 0%, #0e1317 55%, #090c0f 100%);
+      --bg-grad-top:    #131c18;
+      --bg-grad-bottom: #050708;
+      --app-bg: radial-gradient(135% 120% at 22% -10%, #131c18 0%, #0a0f12 55%, #050708 100%);
 
       --surface-0: #0A0E11;
       --surface-1: #141A1F;
@@ -70,9 +70,9 @@
 
       --ease: cubic-bezier(0.16, 1, 0.3, 1);
       /* frosted-glass card surface */
-      --glass: linear-gradient(180deg, rgba(34, 43, 50, 0.66), rgba(18, 24, 29, 0.66));
-      --glass-hover: linear-gradient(180deg, rgba(42, 52, 60, 0.72), rgba(24, 31, 37, 0.72));
-      --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      --glass: linear-gradient(180deg, rgba(24, 31, 36, 0.62), rgba(11, 15, 18, 0.66));
+      --glass-hover: linear-gradient(180deg, rgba(32, 41, 47, 0.68), rgba(15, 20, 24, 0.7));
+      --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.07);
     }
 
     /* Semantic type */
@@ -91,8 +91,8 @@
     html { background: #070a0c; }   /* Safari paints overscroll + chrome from this — keep it dark */
     body {
       background: var(--app-bg);
-      background-attachment: fixed;
       min-height: 100vh;
+      overflow-anchor: none;
       min-height: 100dvh;
       font-family: var(--font-sans);
       color: var(--fg-1);
@@ -120,6 +120,8 @@
 
     /* Hide scrollbar (used by the horizontally-scrollable habit tabs) */
     .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+    .hm-cell { transition: transform .1s, background .2s; }
+    .hm-cell:hover { transform: scale(1.25); }
     .no-scrollbar::-webkit-scrollbar { display: none; }
 
     /* Press feedback on every button */
@@ -188,10 +190,10 @@ const stagger = {
   show: { transition: { staggerChildren: 0.07, delayChildren: 0.04 } },
 };
 /* Heatmap left-to-right reveal wave (per week-column) */
-const colStagger = { hidden: {}, show: { transition: { staggerChildren: 0.012 } } };
+const colStagger = { hidden: {}, show: { transition: { staggerChildren: 0.008 } } };
 const colItem = {
-  hidden: { opacity: 0, y: 6 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.28, ease: EASE } },
+  hidden: { opacity: 0 },
+  show: { opacity: 1, transition: { duration: 0.22, ease: 'easeOut' } },
 };
 
 /* Count-up number; falls back to plain text until framer is bound */
@@ -276,9 +278,9 @@ function Card({ children, style = {}, pad = 22, onClick }) {
       onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
       style={{
         background: hover && onClick ? 'var(--glass-hover)' : 'var(--glass)',
-        backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)',
-        border: '1px solid var(--surface-line)', borderRadius: 18,
-        boxShadow: 'var(--shadow-md), var(--glass-highlight)',
+        backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)',
+        border: '1px solid rgba(255,255,255,0.07)', borderRadius: 20,
+        boxShadow: '0 20px 60px rgba(0,0,0,0.45), var(--glass-highlight)',
         padding: pad, cursor: onClick ? 'pointer' : 'default',
         transition: 'background .18s', ...style,
       }}>
@@ -571,7 +573,7 @@ function Tooltip({ habit, date, entry, breakdown, rect }) {
   const node = (
     <div style={{
       position: 'fixed', left, top, width: W, transform: 'translateY(-100%)',
-      background: '#000', border: '1px solid var(--surface-line-strong)', borderRadius: 10,
+      background: 'rgba(9,13,16,0.92)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 12, boxShadow: '0 16px 44px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.08)',
       padding: '10px 12px', boxShadow: 'var(--shadow-lg)', pointerEvents: 'none', zIndex: 60,
     }}>
       <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>{fmtLong(date)}</div>
@@ -737,6 +739,37 @@ function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCod
     setSel({ key, date, rect });
   };
 
+  /* Memoized: hover only drives the tooltip portal, so pointer travel across the grid
+     must not re-render all ~370 cells (it made scrolling over the heatmap feel heavy). */
+  const grid = useMemo(() => (
+    <motion.div key={habit.id} initial="hidden" animate="show" variants={colStagger} style={{ display: 'flex', gap: GAP }}>
+      {weeks.map((col, ci) => (
+        <motion.div key={ci} variants={colItem} style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
+          {col.map((date, di) => {
+            if (!date) return <div key={di} style={{ width: CELL, height: CELL }} />;
+            const key = keyOf(date);
+            const entry = data[key];
+            const selected = sel && sel.key === key;
+            const max = isMax(habit, entry);
+            return (
+              <div key={di} className="hm-cell"
+                onClick={(e) => onCellClick(date, e)}
+                onMouseEnter={(e) => { if (!sel) setHover({ key, date, rect: e.currentTarget.getBoundingClientRect() }); }}
+                onMouseLeave={() => setHover((h) => (h && h.key === key ? null : h))}
+                style={{
+                  width: CELL, height: CELL, borderRadius: 3, cursor: 'pointer',
+                  background: cellColor(habit, entry),
+                  outline: selected ? '2px solid var(--teal)' : '1px solid rgba(255,255,255,0.045)',
+                  outlineOffset: selected ? 1 : -1,
+                  boxShadow: max ? `0 0 7px ${cellColor(habit, entry)}` : 'none',
+                }} />
+            );
+          })}
+        </motion.div>
+      ))}
+    </motion.div>
+  ), [weeks, data, habit, sel]);
+
   return (
     <div ref={scrollRef} style={{ overflowX: 'auto', paddingBottom: 4 }}>
       <div style={{ minWidth: GUTTER + weeks.length * STEP }}>
@@ -758,34 +791,7 @@ function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCod
               </div>
             ))}
           </div>
-          <motion.div key={habit.id} initial="hidden" animate="show" variants={colStagger} style={{ display: 'flex', gap: GAP }}>
-            {weeks.map((col, ci) => (
-              <motion.div key={ci} variants={colItem} style={{ display: 'flex', flexDirection: 'column', gap: GAP }}>
-                {col.map((date, di) => {
-                  if (!date) return <div key={di} style={{ width: CELL, height: CELL }} />;
-                  const key = keyOf(date);
-                  const entry = data[key];
-                  const selected = sel && sel.key === key;
-                  const max = isMax(habit, entry);
-                  return (
-                    <div key={di}
-                      onClick={(e) => onCellClick(date, e)}
-                      onMouseEnter={(e) => { if (!sel) setHover({ key, date, rect: e.currentTarget.getBoundingClientRect() }); }}
-                      onMouseLeave={() => setHover((h) => (h && h.key === key ? null : h))}
-                      style={{
-                        width: CELL, height: CELL, borderRadius: 3, cursor: 'pointer',
-                        background: cellColor(habit, entry),
-                        outline: selected ? '2px solid var(--teal)' : '1px solid rgba(255,255,255,0.045)',
-                        outlineOffset: selected ? 1 : -1,
-                        boxShadow: max ? `0 0 7px ${cellColor(habit, entry)}` : 'none',
-                        transition: 'transform .1s, background .2s',
-                        transform: hover && hover.key === key ? 'scale(1.25)' : 'scale(1)',
-                      }} />
-                  );
-                })}
-              </motion.div>
-            ))}
-          </motion.div>
+          {grid}
         </div>
 
         {/* legend */}
@@ -863,14 +869,15 @@ function Delta({ now, base, suffix = '%' }) {
 
 /* Stat card */
 function StatCard({ label, value, unit, accent = 'var(--fg-1)', footer }) {
+  const glow = typeof accent === 'string' && accent.startsWith('#');
   return (
-    <Card pad={20} style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+    <Card pad={22} style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
       <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>{label}</span>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginTop: 2 }}>
-        <span className="whoop-num" style={{ fontSize: 46, lineHeight: 1, color: accent }}>{typeof value === 'number' ? <Count value={value} /> : value}</span>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, margin: '12px 0 14px' }}>
+        <span className="whoop-num" style={{ fontSize: 48, lineHeight: 1, color: accent, textShadow: glow ? `0 0 30px ${accent}4d` : accent === 'var(--teal)' ? '0 0 30px rgba(0,241,159,0.3)' : 'none' }}>{typeof value === 'number' ? <Count value={value} /> : value}</span>
         {unit && <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-3)' }}>{unit}</span>}
       </div>
-      <div style={{ fontSize: 12.5, color: 'var(--fg-2)', fontWeight: 500, marginTop: 6, minHeight: 18, display: 'flex', alignItems: 'center', gap: 6 }}>{footer}</div>
+      <div style={{ fontSize: 12.5, color: 'var(--fg-2)', fontWeight: 500, marginTop: 'auto', minHeight: 18, display: 'flex', alignItems: 'center', gap: 6, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.06)' }}>{footer}</div>
     </Card>
   );
 }
@@ -895,9 +902,9 @@ function TrendCard({ habit, stats }) {
               <span className="whoop-num" style={{ fontSize: 12, color: isThis ? accent : 'var(--fg-2)', fontWeight: 700 }}>{v}</span>
               <div style={{
                 width: '100%', maxWidth: 30, height: `${Math.max(4, (v / max) * 92)}px`,
-                background: isThis ? accent : 'rgba(255,255,255,0.14)',
-                borderRadius: '5px 5px 3px 3px',
-                boxShadow: isThis ? `0 0 14px ${accent}66` : 'none', transition: 'height .5s',
+                background: isThis ? `linear-gradient(180deg, ${accent}, ${accent}cc)` : 'rgba(255,255,255,0.1)',
+                borderRadius: 6,
+                boxShadow: isThis ? `0 0 14px ${accent}66` : 'none',
               }} />
               <span style={{ fontSize: 10, fontWeight: 600, color: isThis ? 'var(--fg-2)' : 'var(--fg-3)' }}>{labels[i]}</span>
             </div>
@@ -993,21 +1000,49 @@ function WeekBlock({ habit, label, monday, data, today, total, delta }) {
   );
 }
 
+/* Round glass nav button for the week pager. */
+function WeekNavBtn({ icon, onClick, disabled, label }) {
+  return (
+    <button onClick={onClick} disabled={disabled} aria-label={label} title={label} className="auth-ghost-btn"
+      style={{ width: 32, height: 32, borderRadius: 999, flex: 'none', cursor: disabled ? 'default' : 'pointer', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)', color: disabled ? 'var(--fg-disabled)' : 'var(--fg-2)', opacity: disabled ? 0.5 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <Icon name={icon} size={16} color={disabled ? 'var(--fg-disabled)' : 'var(--fg-2)'} />
+    </button>
+  );
+}
+
+const weekTitle = (weeksAgo) => weeksAgo === 0 ? 'This week' : weeksAgo === 1 ? 'Last week' : `${weeksAgo} weeks ago`;
+
 function WeekReport({ habit, data, today }) {
   const mobile = useIsMobile();
+  const [back, setBack] = useState(1);              // left block: how many weeks ago (1 = last week)
+  const MAX_BACK = 50;                              // stay inside the 52-week data horizon
+  useEffect(() => { setBack(1); }, [habit.id]);
   const thisMon = mondayOf(today);
-  const lastMon = addDays(thisMon, -7);
+  const leftMon = addDays(thisMon, -7 * back);
   const sum = (mon) => weekDates(mon).reduce((s, d) => s + (d <= today ? valOf(habit, data[keyOf(d)]) : 0), 0);
-  const lastTotal = sum(lastMon);
+  const leftTotal = sum(leftMon);
   const thisTotal = sum(thisMon);
   return (
     <Card pad={mobile ? 18 : 26} style={{ marginTop: 16 }}>
-      <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>{'Last 2 weeks \u00b7 Mon \u2192 Sun'}</span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>{'Weekly report \u00b7 Mon \u2192 Sun'}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {back > 1 && (
+            <button onClick={() => setBack(1)} className="auth-ghost-btn"
+              style={{ height: 32, padding: '0 14px', borderRadius: 999, cursor: 'pointer', background: 'rgba(22,236,6,0.09)', border: '1px solid rgba(22,236,6,0.28)', color: 'var(--teal)', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              Now
+            </button>
+          )}
+          <WeekNavBtn icon="chevron-left" label="Earlier week" disabled={back >= MAX_BACK} onClick={() => setBack((b) => Math.min(MAX_BACK, b + 1))} />
+          <WeekNavBtn icon="chevron-right" label="Later week" disabled={back <= 1} onClick={() => setBack((b) => Math.max(1, b - 1))} />
+        </div>
+      </div>
       <div style={{ display: 'flex', flexDirection: mobile ? 'column' : 'row', gap: mobile ? 24 : 40, marginTop: 20, alignItems: 'stretch' }}>
-        <WeekBlock habit={habit} label="Last week" monday={lastMon} data={data} today={today} total={lastTotal} />
+        <WeekBlock habit={habit} label={weekTitle(back)} monday={leftMon} data={data} today={today} total={leftTotal}
+          delta={back > 1 ? <Delta now={leftTotal} base={sum(addDays(leftMon, -7))} /> : null} />
         <div style={{ flex: 'none', background: 'var(--surface-line)', ...(mobile ? { height: 1, width: '100%' } : { width: 1, alignSelf: 'stretch' }) }} />
         <WeekBlock habit={habit} label="This week" monday={thisMon} data={data} today={today} total={thisTotal}
-          delta={<Delta now={thisTotal} base={lastTotal} />} />
+          delta={<Delta now={thisTotal} base={leftTotal} />} />
       </div>
     </Card>
   );
@@ -1284,7 +1319,7 @@ function Tab({ habit, active, onClick }) {
       }}>
       {active && (
         <motion.div layoutId="tabPill" transition={SPRING}
-          style={{ position: 'absolute', inset: 0, borderRadius: 999, background: 'var(--surface-3)', zIndex: 0 }} />
+          style={{ position: 'absolute', inset: 0, borderRadius: 999, background: 'rgba(255,255,255,0.1)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.12), 0 4px 14px rgba(0,0,0,0.35)', zIndex: 0 }} />
       )}
       <span style={{ position: 'relative', zIndex: 1, width: 9, height: 9, borderRadius: 3, background: habit.accent, flex: 'none', boxShadow: active ? `0 0 8px ${habit.accent}` : 'none' }} />
       <span style={{ position: 'relative', zIndex: 1 }}>{habit.name}</span>
@@ -1442,9 +1477,12 @@ function App({ userId, email }) {
     : `${stats.yearTotal} ${habit.unit} across ${stats.activeDays} active days in the last year`);
 
   const newHabitBtn = (
-    <button onClick={() => setModal({ habit: null })} title="Add a habit"
-      style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '11px 16px', borderRadius: 999, cursor: 'pointer', background: 'transparent', border: '1px dashed var(--surface-line-strong)', color: 'var(--fg-3)', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 12, letterSpacing: '.08em', textTransform: 'uppercase' }}>
-      <Icon name="plus" size={15} color="var(--fg-3)" />New habit
+    <button onClick={() => setModal({ habit: null })} title="Add a habit" className="auth-ghost-btn"
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 9, padding: '8px 18px 8px 9px', borderRadius: 999, cursor: 'pointer', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)', color: 'var(--fg-2)', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 12, letterSpacing: '.08em', textTransform: 'uppercase' }}>
+      <span style={{ width: 26, height: 26, borderRadius: 999, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(255,255,255,0.07)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08)' }}>
+        <Icon name="plus" size={14} color="var(--fg-1)" />
+      </span>
+      New habit
     </button>
   );
 
@@ -1453,23 +1491,32 @@ function App({ userId, email }) {
       style={{ width: '100%', maxWidth: 1180, margin: '0 auto', padding: mobile ? '20px 14px 44px' : '40px 32px 64px' }}>
       {/* header */}
       <motion.header variants={fadeUp} style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px 16px', marginBottom: mobile ? 22 : 30 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <svg width="24" height="24" viewBox="0 0 64 64" aria-hidden="true" style={{ display: 'block', flex: 'none', filter: 'drop-shadow(0 0 10px rgba(22,236,6,0.3))' }}>
+            <rect x="8" y="8" width="22" height="22" rx="6" fill="var(--teal)" opacity="0.35" />
+            <rect x="34" y="8" width="22" height="22" rx="6" fill="var(--teal)" opacity="0.7" />
+            <rect x="8" y="34" width="22" height="22" rx="6" fill="var(--teal)" opacity="0.5" />
+            <rect x="34" y="34" width="22" height="22" rx="6" fill="var(--teal)" />
+          </svg>
           <span style={{ fontSize: 18, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-1)' }}>{settings.header_text}</span>
           <span style={{ width: 1, height: 26, background: 'var(--surface-line-strong)' }} />
           <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-2)' }}>Habit Tracker</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <span title={synced ? 'Saved to cloud' : 'Connecting to cloud…'}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: synced ? 'var(--teal)' : 'var(--fg-3)' }}>
-            <span style={{ width: 7, height: 7, borderRadius: 999, flex: 'none', background: synced ? 'var(--teal)' : 'var(--fg-disabled)', boxShadow: synced ? '0 0 8px var(--teal)' : 'none' }} />
-            {synced ? 'Synced' : 'Syncing…'}
-          </span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--fg-3)' }}>
-            <Icon name="calendar" size={15} color="var(--fg-3)" />
-            <span style={{ fontSize: 12.5, fontWeight: 600 }}>{fmtLong(today)}, {today.getFullYear()}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '9px 16px', borderRadius: 999, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)' }}>
+            <span title={synced ? 'Saved to cloud' : 'Connecting to cloud…'}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: synced ? 'var(--teal)' : 'var(--fg-3)' }}>
+              <span style={{ width: 7, height: 7, borderRadius: 999, flex: 'none', background: synced ? 'var(--teal)' : 'var(--fg-disabled)', boxShadow: synced ? '0 0 8px var(--teal)' : 'none' }} />
+              {synced ? 'Synced' : 'Syncing…'}
+            </span>
+            <span style={{ width: 1, height: 14, background: 'var(--surface-line)' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--fg-2)' }}>
+              <Icon name="calendar" size={14} color="var(--fg-3)" />
+              <span style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: 'nowrap' }}>{fmtLong(today)}, {today.getFullYear()}</span>
+            </div>
           </div>
-          <button onClick={() => setSettingsOpen(true)} title="Settings"
-            style={{ width: 34, height: 34, borderRadius: 10, flex: 'none', cursor: 'pointer', background: 'var(--surface-1)', border: '1px solid var(--surface-line)', color: 'var(--fg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <button onClick={() => setSettingsOpen(true)} title="Settings" className="auth-ghost-btn"
+            style={{ width: 38, height: 38, borderRadius: 999, flex: 'none', cursor: 'pointer', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)', color: 'var(--fg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Icon name="settings" size={17} />
           </button>
         </div>
@@ -1478,7 +1525,7 @@ function App({ userId, email }) {
       {/* habit tabs */}
       <motion.div variants={fadeUp} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
         {habits.length > 0 && (
-          <div className="no-scrollbar" style={{ display: 'flex', flexWrap: 'nowrap', gap: 4, background: 'var(--surface-0)', border: '1px solid var(--surface-line)', borderRadius: 999, padding: 4, maxWidth: '100%', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+          <div className="no-scrollbar" style={{ display: 'flex', flexWrap: 'nowrap', gap: 4, background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)', borderRadius: 999, padding: 5, maxWidth: '100%', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
             {habits.map((h) => <Tab key={h.id} habit={h} active={h.id === activeId} onClick={() => setActiveId(h.id)} />)}
           </div>
         )}
@@ -1490,7 +1537,7 @@ function App({ userId, email }) {
       {/* heatmap card */}
       <Card pad={mobile ? 16 : 26} style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 22 }}>
-          <div style={{ width: 44, height: 44, borderRadius: 12, background: 'var(--surface-2)', display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 'none' }}>
+          <div style={{ width: 46, height: 46, borderRadius: 14, background: `${habit.accent}14`, border: `1px solid ${habit.accent}30`, boxShadow: `0 0 22px ${habit.accent}1f, inset 0 1px 0 rgba(255,255,255,0.08)`, display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 'none' }}>
             <Icon name={habit.icon} size={22} color={habit.accent} />
           </div>
           <div style={{ minWidth: 0 }}>
@@ -1500,18 +1547,18 @@ function App({ userId, email }) {
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 16 }}>
             {habit.source === 'coding' && (
               <button onClick={refreshCoding} disabled={syncing} title={syncing ? 'Syncing…' : 'Refresh from LeetCode + GFG'}
-                style={{ width: 36, height: 36, borderRadius: 10, flex: 'none', cursor: syncing ? 'default' : 'pointer', background: 'var(--surface-2)', border: '1px solid var(--surface-line)', color: syncing ? 'var(--teal)' : 'var(--fg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                className="auth-ghost-btn" style={{ width: 38, height: 38, borderRadius: 999, flex: 'none', cursor: syncing ? 'default' : 'pointer', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)', color: syncing ? 'var(--teal)' : 'var(--fg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <motion.span style={{ display: 'flex' }} animate={syncing ? { rotate: 360 } : { rotate: 0 }} transition={syncing ? { repeat: Infinity, duration: 0.9, ease: 'linear' } : { duration: 0 }}>
                   <Icon name="refresh" size={16} />
                 </motion.span>
               </button>
             )}
             <button onClick={() => setModal({ habit })} title="Edit habit"
-              style={{ width: 36, height: 36, borderRadius: 10, flex: 'none', cursor: 'pointer', background: 'var(--surface-2)', border: '1px solid var(--surface-line)', color: 'var(--fg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              className="auth-ghost-btn" style={{ width: 38, height: 38, borderRadius: 999, flex: 'none', cursor: 'pointer', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)', color: 'var(--fg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <Icon name="pencil" size={16} />
             </button>
             <div style={{ textAlign: 'right' }}>
-              <div className="whoop-num" style={{ fontSize: 34, lineHeight: 1, color: habit.accent }}><Count value={stats.cur} /></div>
+              <div className="whoop-num" style={{ fontSize: 38, lineHeight: 1, color: habit.accent, textShadow: `0 0 26px ${habit.accent}59` }}><Count value={stats.cur} /></div>
               <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)', marginTop: 2 }}>Day streak</div>
             </div>
           </div>
@@ -1533,9 +1580,18 @@ function App({ userId, email }) {
       </div>
       </>
       ) : (
-        <Card pad={mobile ? 28 : 44} style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--fg-1)', marginBottom: 6 }}>{synced ? 'No habits yet' : 'Loading…'}</div>
-          {synced && <div style={{ fontSize: 13, color: 'var(--fg-3)' }}>{'Create your first habit with the New habit button above.'}</div>}
+        <Card pad={mobile ? 36 : 56} style={{ textAlign: 'center' }}>
+          <div style={{ width: 60, height: 60, borderRadius: 18, margin: '0 auto 18px', background: 'rgba(22,236,6,0.1)', border: '1px solid rgba(22,236,6,0.25)', boxShadow: '0 0 30px rgba(22,236,6,0.12), inset 0 1px 0 rgba(255,255,255,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Icon name="target" size={26} color="var(--teal)" />
+          </div>
+          <div style={{ fontFamily: 'var(--font-num)', fontSize: 26, fontWeight: 700, letterSpacing: '.03em', textTransform: 'uppercase', color: 'var(--fg-1)', marginBottom: 8 }}>{synced ? 'Start your first streak' : 'Loading…'}</div>
+          {synced && <div style={{ fontSize: 14, color: 'var(--fg-2)', fontWeight: 500, maxWidth: 340, margin: '0 auto 24px', lineHeight: 1.5 }}>Track anything you want to do daily — workouts, reading, code. One square at a time.</div>}
+          {synced && (
+            <button onClick={() => setModal({ habit: null })} className="auth-cta"
+              style={{ position: 'relative', height: 50, borderRadius: 999, border: 'none', cursor: 'pointer', background: 'var(--teal)', color: '#04150a', fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 13, letterSpacing: '.12em', textTransform: 'uppercase', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '0 28px', boxShadow: '0 0 28px rgba(22,236,6,0.25), inset 0 1px 0 rgba(255,255,255,0.3)' }}>
+              Create your first habit
+            </button>
+          )}
         </Card>
       )}
 
