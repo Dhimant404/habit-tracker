@@ -331,6 +331,14 @@ function hueOf(color) {
 /* The solid / peak color for a hue — used for binary cells, tab dots, accents. */
 function peakColor(hue) { return `oklch(0.77 0.235 ${hue})`; }
 
+/* Alpha for either hex or oklch color strings ('#16EC06' or 'oklch(0.77 0.235 145)'). */
+function withAlpha(c, a) {
+  if (typeof c !== 'string') return c;
+  if (c.startsWith('#')) return c + Math.round(a * 255).toString(16).padStart(2, '0');
+  if (c.startsWith('oklch(')) return c.slice(0, -1) + ` / ${a})`;
+  return c;
+}
+
 /* n: 0..levels (0 = empty). Reproduces the original LC_SCALE gradient:
    dark/muted (L 0.42, C 0.11) at level 1 -> bright (L 0.84, C 0.27) at the top. */
 function rampColor(base, levels, n) {
@@ -869,12 +877,12 @@ function Delta({ now, base, suffix = '%' }) {
 
 /* Stat card */
 function StatCard({ label, value, unit, accent = 'var(--fg-1)', footer }) {
-  const glow = typeof accent === 'string' && accent.startsWith('#');
+  const glow = accent !== 'var(--fg-1)';
   return (
     <Card pad={22} style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
       <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>{label}</span>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, margin: '12px 0 14px' }}>
-        <span className="whoop-num" style={{ fontSize: 48, lineHeight: 1, color: accent, textShadow: glow ? `0 0 30px ${accent}4d` : accent === 'var(--teal)' ? '0 0 30px rgba(0,241,159,0.3)' : 'none' }}>{typeof value === 'number' ? <Count value={value} /> : value}</span>
+        <span className="whoop-num" style={{ fontSize: 48, lineHeight: 1, color: accent, textShadow: glow ? `0 0 30px ${withAlpha(accent, 0.3)}` : 'none' }}>{typeof value === 'number' ? <Count value={value} /> : value}</span>
         {unit && <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg-3)' }}>{unit}</span>}
       </div>
       <div style={{ fontSize: 12.5, color: 'var(--fg-2)', fontWeight: 500, marginTop: 'auto', minHeight: 18, display: 'flex', alignItems: 'center', gap: 6, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.06)' }}>{footer}</div>
@@ -886,27 +894,45 @@ function StatCard({ label, value, unit, accent = 'var(--fg-1)', footer }) {
 function TrendCard({ habit, stats }) {
   const data = stats.last8;
   const max = Math.max(1, ...data);
+  const avg = data.reduce((a, b) => a + b, 0) / data.length;
   const accent = habit.accent;
   const labels = ['7w', '6w', '5w', '4w', '3w', '2w', 'Last', 'This'];
+  const [hi, setHi] = useState(null);
+  const BAR_MAX = 88, LABEL_ROW = 22;   // px; avg line offset = label row + bar height fraction
   return (
     <Card pad={22} style={{ display: 'flex', flexDirection: 'column' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>Last 8 weeks</span>
-        <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-3)', whiteSpace: 'nowrap' }}>{habit.unit} / wk</span>
+        <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-3)', whiteSpace: 'nowrap' }}>
+          avg <span className="whoop-num" style={{ color: 'var(--fg-2)', fontSize: 11.5 }}>{Math.round(avg * 10) / 10}</span> {habit.unit} / wk
+        </span>
       </div>
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, height: 116 }}>
+      <div style={{ position: 'relative', display: 'flex', alignItems: 'flex-end', gap: 12, height: 118 }}
+        onMouseLeave={() => setHi(null)}>
+        {/* dashed 8-week average line */}
+        <div style={{ position: 'absolute', left: 0, right: 0, bottom: LABEL_ROW + Math.max(3, (avg / max) * BAR_MAX), borderTop: `1.5px dashed ${withAlpha(accent, 0.4)}`, pointerEvents: 'none' }} />
         {data.map((v, i) => {
           const isThis = i === data.length - 1;
+          const lit = hi === i || (hi === null && isThis);
           return (
-            <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
-              <span className="whoop-num" style={{ fontSize: 12, color: isThis ? accent : 'var(--fg-2)', fontWeight: 700 }}>{v}</span>
-              <div style={{
-                width: '100%', maxWidth: 30, height: `${Math.max(4, (v / max) * 92)}px`,
-                background: isThis ? `linear-gradient(180deg, ${accent}, ${accent}cc)` : 'rgba(255,255,255,0.1)',
-                borderRadius: 6,
-                boxShadow: isThis ? `0 0 14px ${accent}66` : 'none',
-              }} />
-              <span style={{ fontSize: 10, fontWeight: 600, color: isThis ? 'var(--fg-2)' : 'var(--fg-3)' }}>{labels[i]}</span>
+            <div key={i} onMouseEnter={() => setHi(i)}
+              style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, cursor: 'default' }}>
+              <span className="whoop-num" style={{ fontSize: 12, color: lit ? accent : 'var(--fg-3)', fontWeight: 700, textShadow: lit ? `0 0 12px ${withAlpha(accent, 0.5)}` : 'none', transition: 'color .15s' }}>{v}</span>
+              <motion.div key={habit.id + '-' + i}
+                initial={{ scaleY: 0 }} animate={{ scaleY: 1 }}
+                transition={{ delay: 0.15 + i * 0.055, duration: 0.5, ease: [0.22, 0.9, 0.3, 1] }}
+                style={{
+                  width: '100%', maxWidth: 30, height: `${Math.max(4, (v / max) * BAR_MAX)}px`,
+                  transformOrigin: 'bottom',
+                  background: isThis
+                    ? `linear-gradient(180deg, ${accent}, ${withAlpha(accent, 0.7)})`
+                    : `linear-gradient(180deg, ${withAlpha(accent, lit ? 0.6 : 0.32)}, ${withAlpha(accent, lit ? 0.3 : 0.1)})`,
+                  borderRadius: 6,
+                  outline: '1px solid rgba(255,255,255,0.05)', outlineOffset: -1,
+                  boxShadow: lit ? `0 0 16px ${withAlpha(accent, 0.4)}` : 'none',
+                  transition: 'background .18s, box-shadow .18s',
+                }} />
+              <span style={{ fontSize: 10, fontWeight: 600, color: lit ? 'var(--fg-2)' : 'var(--fg-3)', transition: 'color .15s' }}>{labels[i]}</span>
             </div>
           );
         })}
@@ -931,7 +957,7 @@ function StatsStrip({ habit, stats }) {
         footer={<><span style={{ color: 'var(--fg-3)' }}>this week</span><Delta now={stats.thisWeek} base={stats.avg4} /></>} />
       <StatCard
         label="Current streak" value={stats.cur} unit={stats.cur === 1 ? 'day' : 'days'}
-        accent={stats.cur > 0 ? 'var(--teal)' : 'var(--fg-1)'}
+        accent={stats.cur > 0 ? accent : 'var(--fg-1)'}
         footer={<><Icon name="flame" size={14} color="var(--fg-3)" /><span style={{ color: 'var(--fg-3)' }}>best {stats.longest} days</span></>} />
       <TrendCard habit={habit} stats={stats} />
     </div>
@@ -961,7 +987,7 @@ function DayGlance({ habit, date, entry, future, isToday }) {
         background: bg,
         border: future ? '1.5px dashed var(--surface-line-strong)' : '1px solid rgba(255,255,255,0.05)',
         outline: isToday ? '2px solid var(--teal)' : 'none', outlineOffset: 2,
-        boxShadow: done && bright && !future ? `0 0 12px ${bg}66` : 'none',
+        boxShadow: done && bright && !future ? `0 0 12px ${withAlpha(bg, 0.4)}` : 'none',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
         {habit.type === 'binary'
@@ -973,15 +999,18 @@ function DayGlance({ habit, date, entry, future, isToday }) {
   );
 }
 
-function WeekBlock({ habit, label, monday, data, today, total, delta }) {
+function WeekBlock({ habit, label, monday, data, today, total, delta, nav }) {
   const days = weekDates(monday);
   const accent = habit.accent;
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 'none' }}>
-          <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-2)', whiteSpace: 'nowrap' }}>{label}</span>
-          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg-3)', whiteSpace: 'nowrap' }}>{rangeLabel(days[0], days[6])}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 'none', minWidth: 0 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 'none' }}>
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-2)', whiteSpace: 'nowrap' }}>{label}</span>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg-3)', whiteSpace: 'nowrap' }}>{rangeLabel(days[0], days[6])}</span>
+          </div>
+          {nav}
         </div>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flex: 'none' }}>
           {delta}
@@ -1024,22 +1053,22 @@ function WeekReport({ habit, data, today }) {
   const thisTotal = sum(thisMon);
   return (
     <Card pad={mobile ? 18 : 26} style={{ marginTop: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>{'Weekly report \u00b7 Mon \u2192 Sun'}</span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {back > 1 && (
-            <button onClick={() => setBack(1)} className="auth-ghost-btn"
-              style={{ height: 32, padding: '0 14px', borderRadius: 999, cursor: 'pointer', background: 'rgba(22,236,6,0.09)', border: '1px solid rgba(22,236,6,0.28)', color: 'var(--teal)', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 11, letterSpacing: '.1em', textTransform: 'uppercase', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              Now
-            </button>
-          )}
-          <WeekNavBtn icon="chevron-left" label="Earlier week" disabled={back >= MAX_BACK} onClick={() => setBack((b) => Math.min(MAX_BACK, b + 1))} />
-          <WeekNavBtn icon="chevron-right" label="Later week" disabled={back <= 1} onClick={() => setBack((b) => Math.max(1, b - 1))} />
-        </div>
-      </div>
+      <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>{'Weekly report \u00b7 Mon \u2192 Sun'}</span>
       <div style={{ display: 'flex', flexDirection: mobile ? 'column' : 'row', gap: mobile ? 24 : 40, marginTop: 20, alignItems: 'stretch' }}>
         <WeekBlock habit={habit} label={weekTitle(back)} monday={leftMon} data={data} today={today} total={leftTotal}
-          delta={back > 1 ? <Delta now={leftTotal} base={sum(addDays(leftMon, -7))} /> : null} />
+          delta={back > 1 ? <Delta now={leftTotal} base={sum(addDays(leftMon, -7))} /> : null}
+          nav={
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+              <WeekNavBtn icon="chevron-left" label="Earlier week" disabled={back >= MAX_BACK} onClick={() => setBack((b) => Math.min(MAX_BACK, b + 1))} />
+              <WeekNavBtn icon="chevron-right" label="Later week" disabled={back <= 1} onClick={() => setBack((b) => Math.max(1, b - 1))} />
+              {back > 1 && (
+                <button onClick={() => setBack(1)} className="auth-ghost-btn"
+                  style={{ height: 30, padding: '0 13px', borderRadius: 999, cursor: 'pointer', background: 'rgba(22,236,6,0.09)', border: '1px solid rgba(22,236,6,0.28)', color: 'var(--teal)', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 10.5, letterSpacing: '.1em', textTransform: 'uppercase', display: 'inline-flex', alignItems: 'center' }}>
+                  Now
+                </button>
+              )}
+            </div>
+          } />
         <div style={{ flex: 'none', background: 'var(--surface-line)', ...(mobile ? { height: 1, width: '100%' } : { width: 1, alignSelf: 'stretch' }) }} />
         <WeekBlock habit={habit} label="This week" monday={thisMon} data={data} today={today} total={thisTotal}
           delta={<Delta now={thisTotal} base={leftTotal} />} />
@@ -1507,7 +1536,7 @@ function App({ userId, email }) {
             <span title={synced ? 'Saved to cloud' : 'Connecting to cloud…'}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: synced ? 'var(--teal)' : 'var(--fg-3)' }}>
               <span style={{ width: 7, height: 7, borderRadius: 999, flex: 'none', background: synced ? 'var(--teal)' : 'var(--fg-disabled)', boxShadow: synced ? '0 0 8px var(--teal)' : 'none' }} />
-              {synced ? 'Synced' : 'Syncing…'}
+              {synced ? 'All changes saved' : 'Connecting…'}
             </span>
             <span style={{ width: 1, height: 14, background: 'var(--surface-line)' }} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--fg-2)' }}>
@@ -1537,7 +1566,7 @@ function App({ userId, email }) {
       {/* heatmap card */}
       <Card pad={mobile ? 16 : 26} style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 22 }}>
-          <div style={{ width: 46, height: 46, borderRadius: 14, background: `${habit.accent}14`, border: `1px solid ${habit.accent}30`, boxShadow: `0 0 22px ${habit.accent}1f, inset 0 1px 0 rgba(255,255,255,0.08)`, display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 'none' }}>
+          <div style={{ width: 46, height: 46, borderRadius: 14, background: withAlpha(habit.accent, 0.1), border: `1px solid ${withAlpha(habit.accent, 0.28)}`, boxShadow: `0 0 22px ${withAlpha(habit.accent, 0.14)}, inset 0 1px 0 rgba(255,255,255,0.08)`, display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 'none' }}>
             <Icon name={habit.icon} size={22} color={habit.accent} />
           </div>
           <div style={{ minWidth: 0 }}>
@@ -1558,7 +1587,7 @@ function App({ userId, email }) {
               <Icon name="pencil" size={16} />
             </button>
             <div style={{ textAlign: 'right' }}>
-              <div className="whoop-num" style={{ fontSize: 38, lineHeight: 1, color: habit.accent, textShadow: `0 0 26px ${habit.accent}59` }}><Count value={stats.cur} /></div>
+              <div className="whoop-num" style={{ fontSize: 38, lineHeight: 1, color: habit.accent, textShadow: `0 0 26px ${withAlpha(habit.accent, 0.35)}` }}><Count value={stats.cur} /></div>
               <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)', marginTop: 2 }}>Day streak</div>
             </div>
           </div>
