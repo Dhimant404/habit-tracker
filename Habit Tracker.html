@@ -1550,11 +1550,22 @@ function App({ userId, email }) {
    ============================================================ */
 const AUTH_ACCENT = '#16EC06';
 
-// Pulsing-heatmap keyframes for the brand panel (injected once).
+// Auth-screen CSS layer: heatmap pulse, drifting glow orbs, CTA press/focus states (injected once).
 if (!document.getElementById('auth-keyframes')) {
   const _s = document.createElement('style');
   _s.id = 'auth-keyframes';
-  _s.textContent = '@keyframes cellPulse{0%,100%{opacity:var(--baseOp);}50%{opacity:calc(var(--baseOp)*1.7);}}@media (prefers-reduced-motion: reduce){[style*="cellPulse"]{animation:none!important;}}';
+  _s.textContent = [
+    '@keyframes cellPulse{0%,100%{opacity:var(--baseOp);}50%{opacity:calc(var(--baseOp)*1.7);}}',
+    '@keyframes orbDrift{0%{transform:translate3d(0,0,0) scale(1);}50%{transform:translate3d(40px,-30px,0) scale(1.12);}100%{transform:translate3d(-24px,22px,0) scale(0.96);}}',
+    '.auth-orb{position:absolute;border-radius:50%;filter:blur(90px);pointer-events:none;animation:orbDrift 22s cubic-bezier(.45,0,.55,1) infinite alternate;}',
+    '.auth-cta{transition:transform .18s cubic-bezier(.32,.72,0,1), box-shadow .25s ease, opacity .2s ease;}',
+    '.auth-cta:active{transform:scale(.98)!important;}',
+    '.auth-cta:focus-visible,.auth-ghost-btn:focus-visible{outline:2px solid #16EC06;outline-offset:3px;}',
+    '.auth-ghost-btn{transition:background .2s ease, border-color .2s ease, transform .18s cubic-bezier(.32,.72,0,1);}',
+    '.auth-ghost-btn:active{transform:scale(.985);}',
+    '.auth-card-inner input::placeholder{color:rgba(255,255,255,0.4);font-weight:500;}',
+    '@media (prefers-reduced-motion: reduce){[style*="cellPulse"]{animation:none!important;}.auth-orb{animation:none!important;}}',
+  ].join('');
   document.head.appendChild(_s);
 }
 
@@ -1568,11 +1579,12 @@ function mulberry32(seed) {
   };
 }
 
-/* State-driven entrance that stays shown (no framer dependency). */
+/* State-driven entrance that stays shown (no framer dependency). Heavy fade-up with a blur resolve. */
+const AUTH_REDUCE_MOTION = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 function AuthReveal({ delay = 0, children, style = {} }) {
-  const [on, setOn] = useState(false);
-  useEffect(() => { const t = setTimeout(() => setOn(true), 60 + delay); return () => clearTimeout(t); }, []);
-  return <div style={{ transform: on ? 'none' : 'translateY(16px)', opacity: on ? 1 : 0, transition: 'transform .7s cubic-bezier(.2,.7,.2,1), opacity .7s ease', ...style }}>{children}</div>;
+  const [on, setOn] = useState(AUTH_REDUCE_MOTION);
+  useEffect(() => { if (AUTH_REDUCE_MOTION) return; const t = setTimeout(() => setOn(true), 60 + delay); return () => clearTimeout(t); }, []);
+  return <div style={{ transform: on ? 'none' : 'translateY(22px)', opacity: on ? 1 : 0, filter: on ? 'none' : 'blur(10px)', transition: 'transform .85s cubic-bezier(.32,.72,0,1), opacity .85s ease, filter .85s ease', ...style }}>{children}</div>;
 }
 
 /* Living streak heatmap — the signature visual, pulsing in WHOOP green. */
@@ -1617,32 +1629,53 @@ function StreakBadge({ accent }) {
     return () => { clearTimeout(t); cancelAnimationFrame(raf); };
   }, []);
   return (
-    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 12, padding: '11px 18px 11px 14px', borderRadius: 999, background: 'rgba(10,14,17,0.55)', border: '1px solid var(--surface-line-strong)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}>
-      <span style={{ width: 34, height: 34, borderRadius: 999, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(22,236,6,0.14)' }}>
-        <Icon name="flame" size={18} color={accent} stroke={2.2} />
-      </span>
-      <div style={{ lineHeight: 1 }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, whiteSpace: 'nowrap' }}>
-          <span className="whoop-num" style={{ fontFamily: 'var(--font-num)', fontWeight: 700, fontSize: 26, color: '#fff', fontVariantNumeric: 'tabular-nums' }}>{n}</span>
-          <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-2)' }}>day streak</span>
+    <div style={{ display: 'inline-block', padding: 5, borderRadius: 999, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.09)' }}>
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 12, padding: '10px 20px 10px 12px', borderRadius: 999, background: 'rgba(7,10,12,0.72)', border: '1px solid rgba(255,255,255,0.06)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08)', backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)' }}>
+        <span style={{ width: 36, height: 36, borderRadius: 999, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(22,236,6,0.13)', boxShadow: `inset 0 0 0 1px rgba(22,236,6,0.25), 0 0 18px ${accent}2e` }}>
+          <Icon name="flame" size={18} color={accent} stroke={2.2} />
+        </span>
+        <div style={{ lineHeight: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, whiteSpace: 'nowrap' }}>
+            <span className="whoop-num" style={{ fontFamily: 'var(--font-num)', fontWeight: 700, fontSize: 27, color: '#fff', fontVariantNumeric: 'tabular-nums' }}>{n}</span>
+            <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-2)' }}>day streak</span>
+          </div>
+          <div style={{ fontSize: 11.5, color: 'var(--fg-3)', fontWeight: 600, marginTop: 5, whiteSpace: 'nowrap' }}>Your personal best, keep it going</div>
         </div>
-        <div style={{ fontSize: 11.5, color: 'var(--fg-3)', fontWeight: 600, marginTop: 5, whiteSpace: 'nowrap' }}>Your personal best, keep it going</div>
       </div>
     </div>
   );
 }
 
-/* Input with focus glow + optional trailing action. */
+/* Glass input with focus glow + optional trailing action. */
 function AuthField({ icon, type, placeholder, value, onChange, accent, trailing, autoComplete, autoFocus }) {
   const [focus, setFocus] = useState(false);
   return (
-    <label style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '0 16px', height: 56, background: 'var(--surface-0)', borderRadius: 'var(--radius-md)', border: `1px solid ${focus ? accent : 'var(--surface-line)'}`, boxShadow: focus ? `0 0 0 3px ${accent}22, inset 0 0 0 1px ${accent}` : 'none', transition: 'border-color .18s, box-shadow .18s', cursor: 'text' }}>
-      <Icon name={icon} size={19} color={focus ? accent : 'var(--fg-3)'} stroke={1.9} />
+    <label style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '0 17px', height: 55, background: focus ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.04)', borderRadius: 16, border: `1px solid ${focus ? `${accent}88` : 'rgba(255,255,255,0.09)'}`, boxShadow: focus ? `0 0 0 3px ${accent}1f, 0 0 28px ${accent}14, inset 0 1px 0 rgba(255,255,255,0.05)` : 'inset 0 1px 0 rgba(255,255,255,0.04)', transition: 'border-color .2s ease, box-shadow .25s ease, background .2s ease', cursor: 'text' }}>
+      <span style={{ display: 'flex', flex: 'none', transition: 'transform .2s cubic-bezier(.32,.72,0,1)', transform: focus ? 'scale(1.08)' : 'none' }}>
+        <Icon name={icon} size={19} color={focus ? accent : 'var(--fg-3)'} stroke={1.9} />
+      </span>
       <input type={type} placeholder={placeholder} value={value} autoComplete={autoComplete} autoFocus={autoFocus}
         onChange={(e) => onChange(e.target.value)} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
         style={{ flex: 1, minWidth: 0, height: '100%', border: 'none', outline: 'none', background: 'transparent', color: 'var(--fg-1)', fontSize: 15.5, fontWeight: 600, letterSpacing: '.01em' }} />
       {trailing}
     </label>
+  );
+}
+
+/* Primary CTA — full pill with the trailing arrow nested in its own circular chip. */
+function AuthCta({ busy, label, accent }) {
+  const [h, setH] = useState(false);
+  return (
+    <button type="submit" disabled={busy} className="auth-cta"
+      onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
+      style={{ position: 'relative', height: 56, borderRadius: 999, border: 'none', cursor: busy ? 'default' : 'pointer', background: h && !busy ? `linear-gradient(180deg, #3dff2e 0%, ${accent} 100%)` : accent, color: '#04150a', fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 14.5, letterSpacing: '.12em', textTransform: 'uppercase', display: 'flex', alignItems: 'center', justifyContent: 'center', whiteSpace: 'nowrap', padding: '0 60px 0 28px', opacity: busy ? 0.7 : 1, boxShadow: h && !busy ? `0 0 0 1px ${accent}, 0 14px 44px ${accent}52, inset 0 1px 0 rgba(255,255,255,0.35)` : `0 0 30px ${accent}38, inset 0 1px 0 rgba(255,255,255,0.3)`, transform: h && !busy ? 'translateY(-1px)' : 'none' }}>
+      {busy ? 'Please wait…' : label}
+      {!busy && (
+        <span style={{ position: 'absolute', right: 10, top: '50%', width: 36, height: 36, borderRadius: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(3,20,9,0.18)', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.18)', transform: h ? 'translate(2px,-50%) scale(1.06)' : 'translate(0,-50%)', transition: 'transform .22s cubic-bezier(.32,.72,0,1)' }}>
+          <Icon name="arrow-right" size={17} color="#04150a" stroke={2.6} />
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -1652,8 +1685,8 @@ function GoogleGlyph() {
 function AuthSocialBtn({ label, glyph, onClick }) {
   const [h, setH] = useState(false);
   return (
-    <button type="button" onClick={onClick} onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
-      style={{ width: '100%', height: 50, borderRadius: 'var(--radius-md)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, background: h ? 'var(--surface-3)' : 'var(--surface-2)', border: '1px solid var(--surface-line)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 14, transition: 'background .15s' }}>
+    <button type="button" onClick={onClick} className="auth-ghost-btn" onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
+      style={{ width: '100%', height: 53, borderRadius: 999, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 11, background: h ? 'rgba(255,255,255,0.09)' : 'rgba(255,255,255,0.05)', border: `1px solid ${h ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.1)'}`, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 14.5 }}>
       {glyph}{label}
     </button>
   );
@@ -1663,10 +1696,11 @@ function AuthSocialBtn({ label, glyph, onClick }) {
 function AuthBrandPanel({ head, sub, mobile }) {
   const accent = AUTH_ACCENT;
   return (
-    <section style={{ position: 'relative', flex: mobile ? 'none' : '1 1 56%', overflow: 'hidden', background: 'radial-gradient(130% 120% at 18% 12%, #16201d 0%, #0b0f12 52%, #070a0c 100%)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', padding: mobile ? '28px 24px' : '46px 54px', minWidth: 0, minHeight: mobile ? 300 : 'auto' }}>
+    <section style={{ position: 'relative', flex: mobile ? 'none' : '1 1 56%', overflow: 'hidden', background: 'radial-gradient(130% 120% at 18% 12%, #131c18 0%, #090d0f 52%, #050708 100%)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', padding: mobile ? '28px 24px' : '46px 54px', minWidth: 0, minHeight: mobile ? 300 : 'auto' }}>
       <StreakGrid accent={accent} />
-      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', background: 'linear-gradient(180deg, rgba(7,10,12,0.55) 0%, rgba(7,10,12,0.1) 30%, rgba(7,10,12,0.35) 62%, rgba(7,10,12,0.92) 100%)' }} />
-      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', background: 'linear-gradient(90deg, rgba(7,10,12,0) 60%, rgba(7,10,12,0.8) 100%)' }} />
+      <div className="auth-orb" style={{ width: 480, height: 480, left: '-8%', bottom: '-14%', background: `radial-gradient(circle, ${accent}17 0%, transparent 65%)` }} />
+      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', background: 'linear-gradient(180deg, rgba(5,7,8,0.6) 0%, rgba(5,7,8,0.12) 30%, rgba(5,7,8,0.4) 62%, rgba(5,7,8,0.94) 100%)' }} />
+      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', background: 'linear-gradient(90deg, rgba(5,7,8,0) 60%, rgba(5,7,8,0.82) 100%)' }} />
 
       {/* top: logo */}
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 14 }}>
@@ -1679,8 +1713,8 @@ function AuthBrandPanel({ head, sub, mobile }) {
       <div style={{ position: 'relative', maxWidth: 560 }}>
         {!mobile && <AuthReveal delay={0} style={{ marginBottom: 26 }}><StreakBadge accent={accent} /></AuthReveal>}
         <AuthReveal delay={90}>
-          <h1 style={{ margin: 0, fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: mobile ? 'clamp(34px, 9vw, 56px)' : 'clamp(40px, 5.2vw, 72px)', lineHeight: 0.98, letterSpacing: '0.01em', textTransform: 'uppercase', color: '#fff' }}>
-            {head[0]}<br /><span style={{ color: accent, textShadow: `0 0 40px ${accent}66` }}>{head[1]}</span>
+          <h1 style={{ margin: 0, fontFamily: 'var(--font-num)', fontWeight: 700, fontSize: mobile ? 'clamp(38px, 10vw, 62px)' : 'clamp(46px, 5.8vw, 82px)', lineHeight: 0.94, letterSpacing: '0.005em', textTransform: 'uppercase', color: '#fff', textWrap: 'balance' }}>
+            {head[0]}<br /><span style={{ color: accent, textShadow: `0 0 44px ${accent}59` }}>{head[1]}</span>
           </h1>
         </AuthReveal>
         <AuthReveal delay={170}>
@@ -1696,8 +1730,16 @@ function AuthShell({ head, sub, mobile, children }) {
   return (
     <div style={{ display: 'flex', flexDirection: mobile ? 'column' : 'row', width: '100%', minHeight: '100vh', overflow: mobile ? 'visible' : 'hidden' }}>
       <AuthBrandPanel head={head} sub={sub} mobile={mobile} />
-      <section style={{ position: 'relative', flex: mobile ? 'none' : '1 1 44%', minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--surface-1)', borderLeft: mobile ? 'none' : '1px solid var(--surface-line)', borderTop: mobile ? '1px solid var(--surface-line)' : 'none', padding: mobile ? '36px 24px' : '40px 32px' }}>
-        <AuthReveal delay={120} style={{ width: '100%', maxWidth: 384 }}>{children}</AuthReveal>
+      <section style={{ position: 'relative', flex: mobile ? 'none' : '1 1 44%', minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', background: 'radial-gradient(120% 100% at 85% 0%, #0b1210 0%, #070a0c 45%, #050708 100%)', borderLeft: mobile ? 'none' : '1px solid rgba(255,255,255,0.06)', borderTop: mobile ? '1px solid rgba(255,255,255,0.06)' : 'none', padding: mobile ? '36px 20px 44px' : '40px 32px' }}>
+        <div className="auth-orb" style={{ width: 420, height: 420, right: '-18%', top: '-12%', background: `radial-gradient(circle, ${AUTH_ACCENT}14 0%, transparent 65%)`, animationDelay: '-11s' }} />
+        <div className="auth-orb" style={{ width: 360, height: 360, left: '-16%', bottom: '-16%', background: 'radial-gradient(circle, rgba(64,190,255,0.07) 0%, transparent 65%)', animationDelay: '-5s' }} />
+        <AuthReveal delay={120} style={{ position: 'relative', width: '100%', maxWidth: 428 }}>
+          <div style={{ padding: mobile ? 6 : 8, borderRadius: 32, background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)' }}>
+            <div className="auth-card-inner" style={{ padding: mobile ? '28px 22px' : '36px 32px', borderRadius: 25, background: 'rgba(8,11,13,0.68)', border: '1px solid rgba(255,255,255,0.05)', backdropFilter: 'blur(28px) saturate(1.35)', WebkitBackdropFilter: 'blur(28px) saturate(1.35)', boxShadow: '0 30px 90px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.07)' }}>
+              {children}
+            </div>
+          </div>
+        </AuthReveal>
       </section>
     </div>
   );
@@ -1720,7 +1762,6 @@ function AuthScreen() {
   const [err, setErr] = useState('');
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
-  const [btnHover, setBtnHover] = useState(false);
 
   // The previous user's accent may linger on --teal; reset to default on the login screen.
   useEffect(() => { applyPrimaryColor('#16EC06'); }, []);
@@ -1767,9 +1808,12 @@ function AuthScreen() {
 
   return (
     <AuthShell head={hero.head} sub={hero.sub} mobile={mobile}>
-      <span className="whoop-eyebrow" style={{ color: accent, display: 'block', marginBottom: 12 }}>{eyebrow}</span>
-      <h2 style={{ margin: 0, fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 34, lineHeight: 1.04, letterSpacing: '.04em', textTransform: 'uppercase', color: '#fff', whiteSpace: 'nowrap' }}>{title}</h2>
-      <p style={{ margin: '10px 0 30px', fontSize: 15, color: 'var(--fg-2)', fontWeight: 500 }}>{formSub}</p>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '6px 13px', borderRadius: 999, background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.09)', marginBottom: 16 }}>
+        <span style={{ width: 6, height: 6, borderRadius: 999, background: accent, boxShadow: `0 0 10px ${accent}` }} />
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-2)' }}>{eyebrow}</span>
+      </span>
+      <h2 style={{ margin: 0, fontFamily: 'var(--font-num)', fontWeight: 700, fontSize: 38, lineHeight: 1, letterSpacing: '.02em', textTransform: 'uppercase', color: '#fff', whiteSpace: 'nowrap' }}>{title}</h2>
+      <p style={{ margin: '11px 0 28px', fontSize: 15, color: 'var(--fg-2)', fontWeight: 500, lineHeight: 1.5 }}>{formSub}</p>
 
       <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <AuthField icon="mail" type="email" placeholder="Email" value={email} onChange={setEmail} accent={accent} autoComplete="email" autoFocus />
@@ -1800,20 +1844,15 @@ function AuthScreen() {
         {err && <div style={{ color: 'var(--recovery-low)', fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>{err}</div>}
         {msg && <div style={{ color: 'var(--teal)', fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>{msg}</div>}
 
-        <button type="submit" disabled={busy}
-          onMouseEnter={() => setBtnHover(true)} onMouseLeave={() => setBtnHover(false)}
-          style={{ height: 56, borderRadius: 'var(--radius-md)', border: 'none', cursor: busy ? 'default' : 'pointer', background: accent, color: '#06231a', fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 14.5, letterSpacing: '.12em', textTransform: 'uppercase', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, whiteSpace: 'nowrap', opacity: busy ? 0.7 : 1, boxShadow: btnHover && !busy ? `0 0 0 1px ${accent}, 0 10px 34px ${accent}55` : `0 0 26px ${accent}3a`, transform: btnHover && !busy ? 'translateY(-1px)' : 'none', transition: 'transform .15s, box-shadow .2s, opacity .2s' }}>
-          {busy ? 'Please wait…' : cta}
-          {!busy && <span style={{ display: 'flex', transform: btnHover ? 'translateX(3px)' : 'none', transition: 'transform .15s' }}><Icon name="arrow-right" size={18} color="#06231a" stroke={2.4} /></span>}
-        </button>
+        <AuthCta busy={busy} label={cta} accent={accent} />
       </form>
 
       {mode !== 'reset' && (
         <>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, margin: '24px 0' }}>
-            <span style={{ flex: 1, height: 1, background: 'var(--surface-line)' }} />
+            <span style={{ flex: 1, height: 1, background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.14))' }} />
             <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>or</span>
-            <span style={{ flex: 1, height: 1, background: 'var(--surface-line)' }} />
+            <span style={{ flex: 1, height: 1, background: 'linear-gradient(90deg, rgba(255,255,255,0.14), transparent)' }} />
           </div>
           <AuthSocialBtn label="Continue with Google" glyph={<GoogleGlyph />} onClick={social} />
         </>
@@ -1836,7 +1875,6 @@ function UpdatePasswordScreen({ onDone }) {
   const [show, setShow] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
-  const [btnHover, setBtnHover] = useState(false);
 
   useEffect(() => { applyPrimaryColor('#16EC06'); }, []);
 
@@ -1855,9 +1893,12 @@ function UpdatePasswordScreen({ onDone }) {
 
   return (
     <AuthShell head={['ALMOST', 'THERE']} sub="Set a fresh password and jump right back into your streak." mobile={mobile}>
-      <span className="whoop-eyebrow" style={{ color: accent, display: 'block', marginBottom: 12 }}>New password</span>
-      <h2 style={{ margin: 0, fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 34, lineHeight: 1.04, letterSpacing: '.04em', textTransform: 'uppercase', color: '#fff', whiteSpace: 'nowrap' }}>Reset it</h2>
-      <p style={{ margin: '10px 0 30px', fontSize: 15, color: 'var(--fg-2)', fontWeight: 500 }}>Choose a new password for your account.</p>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '6px 13px', borderRadius: 999, background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.09)', marginBottom: 16 }}>
+        <span style={{ width: 6, height: 6, borderRadius: 999, background: accent, boxShadow: `0 0 10px ${accent}` }} />
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-2)' }}>New password</span>
+      </span>
+      <h2 style={{ margin: 0, fontFamily: 'var(--font-num)', fontWeight: 700, fontSize: 38, lineHeight: 1, letterSpacing: '.02em', textTransform: 'uppercase', color: '#fff', whiteSpace: 'nowrap' }}>Reset it</h2>
+      <p style={{ margin: '11px 0 28px', fontSize: 15, color: 'var(--fg-2)', fontWeight: 500, lineHeight: 1.5 }}>Choose a new password for your account.</p>
 
       <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <AuthField icon="lock" type={show ? 'text' : 'password'} placeholder="New password" value={password} onChange={setPassword} accent={accent} autoComplete="new-password" autoFocus
@@ -1868,12 +1909,7 @@ function UpdatePasswordScreen({ onDone }) {
             </button>
           } />
         {err && <div style={{ color: 'var(--recovery-low)', fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>{err}</div>}
-        <button type="submit" disabled={busy}
-          onMouseEnter={() => setBtnHover(true)} onMouseLeave={() => setBtnHover(false)}
-          style={{ height: 56, borderRadius: 'var(--radius-md)', border: 'none', cursor: busy ? 'default' : 'pointer', background: accent, color: '#06231a', fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 14.5, letterSpacing: '.12em', textTransform: 'uppercase', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, whiteSpace: 'nowrap', opacity: busy ? 0.7 : 1, boxShadow: btnHover && !busy ? `0 0 0 1px ${accent}, 0 10px 34px ${accent}55` : `0 0 26px ${accent}3a`, transform: btnHover && !busy ? 'translateY(-1px)' : 'none', transition: 'transform .15s, box-shadow .2s, opacity .2s' }}>
-          {busy ? 'Please wait…' : 'Update password'}
-          {!busy && <span style={{ display: 'flex', transform: btnHover ? 'translateX(3px)' : 'none', transition: 'transform .15s' }}><Icon name="arrow-right" size={18} color="#06231a" stroke={2.4} /></span>}
-        </button>
+        <AuthCta busy={busy} label="Update password" accent={accent} />
       </form>
     </AuthShell>
   );
