@@ -1729,7 +1729,16 @@ function AuthScreen() {
   useEffect(() => { applyPrimaryColor('#16EC06'); }, []);
 
   const go = (m) => { setMode(m); setErr(''); setMsg(''); };
-  const social = () => { setMsg(''); setErr("Google and Apple sign-in aren't available yet. Please use your email and password for now."); };
+  const social = async (provider) => {
+    setMsg(''); setErr('');
+    if (provider !== 'google') { setErr("Apple sign-in isn't available yet. Please use Google or your email and password."); return; }
+    setBusy(true);
+    const { error } = await sb.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.origin + window.location.pathname },
+    });
+    if (error) { setErr(error.message || 'Google sign-in failed.'); setBusy(false); }
+  };
 
   const submit = async (e) => {
     if (e) e.preventDefault();
@@ -1811,8 +1820,8 @@ function AuthScreen() {
             <span style={{ flex: 1, height: 1, background: 'var(--surface-line)' }} />
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-            <AuthSocialBtn label="Apple" glyph={<AppleGlyph />} onClick={social} />
-            <AuthSocialBtn label="Google" glyph={<GoogleGlyph />} onClick={social} />
+            <AuthSocialBtn label="Apple" glyph={<AppleGlyph />} onClick={() => social('apple')} />
+            <AuthSocialBtn label="Google" glyph={<GoogleGlyph />} onClick={() => social('google')} />
           </div>
         </>
       )}
