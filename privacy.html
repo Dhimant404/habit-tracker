@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#050705" />
+<title>Privacy Policy · Habit Tracker</title>
+<style>
+  html, body { background: #050705; margin: 0; }
+  body { color: #E7EDE7; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         line-height: 1.65; padding: 48px 20px; }
+  main { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 28px; margin: 0 0 6px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .12em;
+       color: #16EC06; margin: 32px 0 10px; }
+  p, li { color: #A6B2A6; font-size: 15px; }
+  .meta { color: #6B776B; font-size: 13px; margin-bottom: 8px; }
+  a { color: #16EC06; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Privacy Policy</h1>
+  <p class="meta">Habit Tracker &middot; last updated 1 August 2026</p>
+
+  <h2>What this app is</h2>
+  <p>Habit Tracker is a personal habit-logging app. It is operated by an individual,
+     not a company, and is not offered as a commercial service.</p>
+
+  <h2>What is stored</h2>
+  <p>Your email address and password hash (handled by Supabase Auth), the habits you
+     create, and the days you log against them. If you connect WHOOP, the app also
+     stores your workout start and end times, sport name, duration, and strain, plus
+     the OAuth tokens needed to keep that connection alive.</p>
+
+  <h2>How WHOOP data is used</h2>
+  <p>WHOOP workout data is used for one purpose only: deciding whether each day counts
+     as a workout day on your own heatmap. It is never sold, shared, or sent anywhere
+     other than the database backing your own account.</p>
+
+  <h2>Where it lives</h2>
+  <p>All data is stored in Supabase (PostgreSQL). Row Level Security restricts every
+     row to the account that created it, so no user can read another user's data.
+     OAuth tokens are held in a table that client applications cannot read at all.</p>
+
+  <h2>Disconnecting and deletion</h2>
+  <p>Disconnecting WHOOP in the app revokes the access grant with WHOOP and deletes the
+     stored tokens. You may also revoke access at any time from your WHOOP account
+     settings. To delete your account and all associated data, email the address below.</p>
+
+  <h2>Third parties</h2>
+  <p>Supabase (database, authentication), Vercel (hosting), WHOOP (workout data, only if
+     you connect it), and Google (only if you use Google sign-in). No analytics or
+     advertising trackers are used.</p>
+
+  <h2>Contact</h2>
+  <p><a href="mailto:dhimantworks@gmail.com">dhimantworks@gmail.com</a></p>
+</main>
+</body>
+</html>
