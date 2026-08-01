@@ -378,7 +378,7 @@ function rowToHabit(r) {
     levels: r.levels || (r.type === 'binary' ? 1 : 5),
     unit: r.unit || 'times', icon: r.icon || 'target',
     color, sort_order: r.sort_order || 0, accent: peakColor(hueOf(color)),
-    source: r.source || null,
+    source: r.source || null, fitness_kind: r.fitness_kind || null,
   };
 }
 function slugify(name) {
@@ -391,7 +391,7 @@ async function fetchHabits() {
   return (data || []).map(rowToHabit);
 }
 async function insertHabit(h, userId) {
-  const res = await sb.from(HABITS_TABLE).insert({ id: h.id, name: h.name, type: h.type, levels: h.levels, unit: h.unit, icon: h.icon, color: h.color, sort_order: h.sort_order, source: h.source || null, user_id: userId });
+  const res = await sb.from(HABITS_TABLE).insert({ id: h.id, name: h.name, type: h.type, levels: h.levels, unit: h.unit, icon: h.icon, color: h.color, sort_order: h.sort_order, source: h.source || null, fitness_kind: h.fitness_kind || null, user_id: userId });
   if (res.error) console.error('Habit insert failed:', res.error.message);
   return res;
 }
@@ -470,6 +470,107 @@ async function saveCodingNote(habitId, day, note) {
   if (res.error) console.error('Coding note save failed:', res.error.message);
   return res;
 }
+/* ---- WHOOP integration (auto-fill a fitness habit from WHOOP workouts) ---- */
+const WHOOP_TABLE = 'whoop_connections';
+const FITNESS_MANUAL_TABLE = 'fitness_manual';
+const WHOOP_WORKOUTS_TABLE = 'whoop_workouts';
+const DEFAULT_WHOOP = { connected: false, whoop_name: null, min_duration_min: 20,
+  excluded_sports: ['Walking'], last_synced_at: null, last_sync_status: null,
+  backfill_status: 'none', backfill_progress: 0 };
+
+/* Short "2m ago" style stamp for the connection status line. */
+function relTime(iso) {
+  if (!iso) return '';
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+async function fetchWhoopConnection() {
+  // RLS scopes this to the signed-in user's single row.
+  const { data, error } = await sb.from(WHOOP_TABLE)
+    .select('connected, whoop_name, min_duration_min, excluded_sports, last_synced_at, last_sync_status, backfill_status, backfill_progress')
+    .maybeSingle();
+  if (error) { console.error('WHOOP fetch failed:', error.message); return { ...DEFAULT_WHOOP }; }
+  return { ...DEFAULT_WHOOP, ...(data || {}) };
+}
+
+async function saveWhoopSettings(patch, userId) {
+  const res = await sb.from(WHOOP_TABLE).upsert(
+    { user_id: userId, ...patch, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+  if (res.error) console.error('WHOOP settings save failed:', res.error.message);
+  return res;
+}
+
+/* Ask the edge function for a consent URL (it signs the state server-side), then hand off. */
+async function startWhoopConnect() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) return;
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/whoop-oauth?action=start`,
+    { headers: { Authorization: `Bearer ${session.access_token}` } });
+  if (!res.ok) { console.error('WHOOP connect start failed:', res.status); return; }
+  const { url } = await res.json();
+  window.location.href = url;
+}
+
+/* Tokens are service-role only, so revocation is the edge function's job. */
+async function disconnectWhoop() {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) return { ok: false };
+  try {
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/whoop-oauth?action=disconnect`,
+      { headers: { Authorization: `Bearer ${session.access_token}` } });
+    return { ok: res.ok };
+  } catch (e) { console.error('WHOOP disconnect failed:', e); return { ok: false }; }
+}
+
+async function triggerWhoopSync(mode) {
+  try {
+    const { data, error } = await sb.functions.invoke('whoop-sync', { body: { mode: mode || 'recent' } });
+    if (error) { console.error('WHOOP sync failed:', error.message); return { ok: false }; }
+    return { ok: true, data };
+  } catch (e) { console.error('WHOOP sync error:', e); return { ok: false }; }
+}
+
+/* Hand-marked fitness days: { 'YYYY-MM-DD': true }. */
+async function fetchFitnessManual() {
+  const out = {};
+  const { data, error } = await sb.from(FITNESS_MANUAL_TABLE).select('day, value');
+  if (error) { console.error('Fitness manual fetch failed:', error.message); return out; }
+  (data || []).forEach((r) => { if (r.value > 0) out[r.day] = true; });
+  return out;
+}
+
+async function saveFitnessManual(userId, day, on) {
+  const res = on
+    ? await sb.from(FITNESS_MANUAL_TABLE).upsert(
+        { user_id: userId, day, value: 1, updated_at: new Date().toISOString() },
+        { onConflict: 'user_id,day' })
+    : await sb.from(FITNESS_MANUAL_TABLE).delete().eq('user_id', userId).eq('day', day);
+  if (res.error) console.error('Fitness manual save failed:', res.error.message);
+  return res;
+}
+
+/* Per-day workout detail for the tooltip + day editor: { 'YYYY-MM-DD': [ {...} ] }. */
+async function fetchWhoopWorkouts() {
+  const out = {};
+  const { data, error } = await sb.from(WHOOP_WORKOUTS_TABLE)
+    .select('day, sport_name, duration_min, strain').order('start_at');
+  if (error) { console.error('WHOOP workouts fetch failed:', error.message); return out; }
+  (data || []).forEach((r) => { (out[r.day] = out[r.day] || []).push(r); });
+  return out;
+}
+
+/* Does this day have a WHOOP workout that clears the bar? Mirrors recompute_fitness_day. */
+function whoopQualifies(dayWorkouts, whoop) {
+  const min = (whoop && whoop.min_duration_min) || 20;
+  const excl = ((whoop && whoop.excluded_sports) || []).map((s) => String(s).toLowerCase());
+  return (dayWorkouts || []).some((w) => w.duration_min >= min
+    && !excl.includes(String(w.sport_name || '').toLowerCase()));
+}
+
 /* Recolor the app's primary accent by overriding the CSS variable used throughout. */
 function applyPrimaryColor(color) {
   if (color) document.documentElement.style.setProperty('--teal', color);
@@ -565,14 +666,16 @@ function monthLabels(weeks) {
 }
 
 /* Tooltip */
-function Tooltip({ habit, date, entry, breakdown, rect }) {
+function Tooltip({ habit, date, entry, breakdown, workouts, manualOn, rect }) {
   if (!rect) return null;
   const W = 210;
   const left = Math.min(window.innerWidth - W - 8, Math.max(8, rect.left + rect.width / 2 - W / 2));
   const top = rect.top - 12;
   const val = entry ? entry.v : 0;
   const isCoding = habit.source === 'coding';
+  const isFitness = habit.source === 'fitness';
   const bd = breakdown || { leetcode: 0, gfg: 0, manual: 0 };
+  const wk = workouts || [];
   const valTxt = habit.type === 'binary'
     ? (val ? 'Done' : 'Not done')
     : `${val} ${unitLabel(habit, val)}`;
@@ -594,6 +697,18 @@ function Tooltip({ habit, date, entry, breakdown, rect }) {
           <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>LeetCode</span><span className="whoop-num">{bd.leetcode || 0}</span></div>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>GeeksforGeeks</span><span className="whoop-num">{bd.gfg || 0}</span></div>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Manual</span><span className="whoop-num">{(bd.manual || 0) > 0 ? '+' : ''}{bd.manual || 0}</span></div>
+        </div>
+      ) : isFitness ? (
+        <div style={{ marginTop: 7, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12, color: 'var(--fg-2)' }}>
+          {wk.map((w, i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.sport_name || 'Workout'}</span>
+              <span className="whoop-num" style={{ flex: 'none' }}>{Math.round(w.duration_min)}m</span>
+            </div>
+          ))}
+          {manualOn && <div style={{ color: 'var(--fg-3)' }}>Marked by hand</div>}
+          {!wk.length && !manualOn && <div style={{ color: 'var(--fg-disabled)', fontStyle: 'italic' }}>No workouts</div>}
+          {entry && entry.note ? <div style={{ marginTop: 3, lineHeight: 1.35 }}>{entry.note}</div> : null}
         </div>
       ) : entry && entry.note
         ? <div style={{ fontSize: 12, color: 'var(--fg-2)', marginTop: 6, lineHeight: 1.35 }}>{entry.note}</div>
@@ -620,7 +735,7 @@ function RoundBtn({ icon, onClick, disabled }) {
   );
 }
 
-function Editor({ habit, date, entry, breakdown, onChange, onManual, onNote, onClose }) {
+function Editor({ habit, date, entry, breakdown, workouts, manualOn, autoGreen, onChange, onManual, onNote, onFitnessManual, onClose }) {
   // Close on Escape for keyboard users.
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -629,6 +744,8 @@ function Editor({ habit, date, entry, breakdown, onChange, onManual, onNote, onC
   }, [onClose]);
 
   const isCoding = habit.source === 'coding';
+  const isFitness = habit.source === 'fitness';
+  const wk = workouts || [];
   // Coding habit: total = leetcode + gfg + manual; the +/- adjusts only manual.
   const bd = breakdown || { leetcode: 0, gfg: 0, manual: 0 };
   const lc = bd.leetcode || 0, gfg = bd.gfg || 0, manual = bd.manual || 0;
@@ -639,7 +756,7 @@ function Editor({ habit, date, entry, breakdown, onChange, onManual, onNote, onC
   const note = entry ? entry.note || '' : '';
   const key = keyOf(date);
   const setV = (nv) => onChange({ v: Math.min(maxV, Math.max(0, nv)), note });
-  const setNote = (nn) => (isCoding ? onNote(key, nn) : onChange({ v, note: nn }));
+  const setNote = (nn) => ((isCoding || isFitness) ? onNote(key, nn) : onChange({ v, note: nn }));
   // Manual adjusts up without limit; down only until the day's total hits 0.
   const bumpManual = (delta) => onManual(key, Math.max(manual + delta, -auto), auto);
   const srcRow = (label, val, color) => (
@@ -683,6 +800,30 @@ function Editor({ habit, date, entry, breakdown, onChange, onManual, onNote, onC
             </div>
             <div style={{ fontSize: 11, color: 'var(--fg-3)', marginTop: 8, textAlign: 'center' }}>{'+/− adjusts your manual count; LeetCode & GFG sync automatically.'}</div>
           </div>
+        ) : isFitness ? (
+          <div>
+            <button onClick={() => onFitnessManual(key, !manualOn)} style={{
+              width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9,
+              padding: '15px', borderRadius: 12, cursor: 'pointer', transition: 'all .15s',
+              fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 14, letterSpacing: '.08em', textTransform: 'uppercase',
+              background: manualOn ? habit.accent : 'transparent', color: manualOn ? '#04261a' : 'var(--fg-1)',
+              border: manualOn ? 'none' : '1.5px solid var(--surface-line-strong)',
+              boxShadow: manualOn ? `0 0 18px ${withAlpha(habit.accent, 0.45)}` : 'none',
+            }}>
+              <Icon name={manualOn ? 'check' : habit.icon} size={18} />{manualOn ? 'Marked by hand' : 'Mark as done'}
+            </button>
+            {(wk.length > 0 || autoGreen) && (
+              <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 9, padding: '13px 14px', borderRadius: 12, background: 'var(--surface-0)', border: '1px solid var(--surface-line)' }}>
+                {wk.map((w, i) => srcRow(w.sport_name || 'Workout', `${Math.round(w.duration_min)}m`, habit.accent))}
+                {!wk.length && <div style={{ fontSize: 12, color: 'var(--fg-3)' }}>No WHOOP workouts on this day.</div>}
+              </div>
+            )}
+            <div style={{ fontSize: 11, color: 'var(--fg-3)', marginTop: 8, textAlign: 'center', lineHeight: 1.5 }}>
+              {autoGreen
+                ? 'WHOOP already counts this day — your mark is optional.'
+                : 'WHOOP syncs automatically; mark a day yourself when it missed one.'}
+            </div>
+          </div>
         ) : habit.type === 'binary' ? (
           <button onClick={() => setV(v ? 0 : 1)} style={{
             width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9,
@@ -722,7 +863,7 @@ function Editor({ habit, date, entry, breakdown, onChange, onManual, onNote, onC
 }
 
 /* Heatmap grid */
-function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCodingNote }) {
+function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCodingNote, whoopWorkouts, fitnessManual, whoop, onFitnessManual }) {
   const [hover, setHover] = useState(null);
   const [sel, setSel] = useState(null);
   const scrollRef = useRef(null);
@@ -812,12 +953,19 @@ function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCod
         </div>
       </div>
 
-      {hover && !sel && <Tooltip habit={habit} date={hover.date} entry={data[hover.key]} breakdown={codingDaily && codingDaily[hover.key]} rect={hover.rect} />}
+      {hover && !sel && <Tooltip habit={habit} date={hover.date} entry={data[hover.key]}
+        breakdown={codingDaily && codingDaily[hover.key]}
+        workouts={whoopWorkouts && whoopWorkouts[hover.key]}
+        manualOn={!!(fitnessManual && fitnessManual[hover.key])} rect={hover.rect} />}
       <AnimatePresence>
         {sel && (
           <Editor key="cell-editor" habit={habit} date={sel.date} entry={data[sel.key]}
             breakdown={codingDaily && codingDaily[sel.key]}
+            workouts={whoopWorkouts && whoopWorkouts[sel.key]}
+            manualOn={!!(fitnessManual && fitnessManual[sel.key])}
+            autoGreen={whoopWorkouts ? whoopQualifies(whoopWorkouts[sel.key], whoop) : false}
             onChange={(e) => onSet(sel.key, e)} onManual={onCodingManual} onNote={onCodingNote}
+            onFitnessManual={onFitnessManual}
             onClose={() => setSel(null)} />
         )}
       </AnimatePresence>
@@ -1112,9 +1260,10 @@ function ColorPicker({ value, onChange }) {
 }
 
 /* Create / edit / delete a habit. Pure form — persistence handled by caller. */
-function HabitModal({ initial, coding, syncing, onSave, onDelete, onClose }) {
+function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisconnectWhoop, onClose }) {
   const isEdit = !!initial;
   const startCoding = !!(initial && initial.source === 'coding');
+  const startFitness = !!(initial && initial.source === 'fitness');
   const [name, setName] = useState(initial ? initial.name : '');
   const [type, setType] = useState(initial ? initial.type : 'count');
   const [levels, setLevels] = useState(initial ? (initial.levels || 5) : 5);
@@ -1126,26 +1275,36 @@ function HabitModal({ initial, coding, syncing, onSave, onDelete, onClose }) {
   const [codingOn, setCodingOn] = useState(startCoding);
   const [leetUser, setLeetUser] = useState((coding && coding.leetcode_username) || '');
   const [gfgUser, setGfgUser] = useState((coding && coding.gfg_username) || '');
+  // Fitness sync: one integration at a time, so coding and fitness are mutually exclusive.
+  const [fitnessOn, setFitnessOn] = useState(startFitness);
+  const [minDur, setMinDur] = useState((whoop && whoop.min_duration_min) || 20);
   const canSave = name.trim().length > 0 && (!codingOn || leetUser.trim() || gfgUser.trim());
 
   const enableCoding = (v) => {
     setCodingOn(v);
-    if (v) { setType('count'); if (!name.trim()) setName('Coding'); if (icon === 'target') setIcon('code'); if (color === '#16EC06') setColor('#0093E7'); }
+    if (v) { setFitnessOn(false); setType('count'); if (!name.trim()) setName('Coding'); if (icon === 'target') setIcon('code'); if (color === '#16EC06') setColor('#0093E7'); }
+  };
+  const enableFitness = (v) => {
+    setFitnessOn(v);
+    if (v) { setCodingOn(false); setType('binary'); if (!name.trim()) setName('Workout'); if (icon === 'target') setIcon('dumbbell'); }
   };
 
   const submit = () => {
     if (!canSave) return;
     const form = {
       name: name.trim(),
-      type: codingOn ? 'count' : type,
-      levels: codingOn ? 5 : (type === 'count' ? levels : 1),
-      unit: codingOn ? 'solves' : (unit.trim() || 'times'),
-      icon, color, source: codingOn ? 'coding' : null,
+      type: codingOn ? 'count' : (fitnessOn ? 'binary' : type),
+      levels: codingOn ? 5 : (fitnessOn ? 1 : (type === 'count' ? levels : 1)),
+      unit: codingOn ? 'solves' : (fitnessOn ? 'times' : (unit.trim() || 'times')),
+      icon, color,
+      source: codingOn ? 'coding' : (fitnessOn ? 'fitness' : null),
+      fitness_kind: fitnessOn ? 'workout' : null,
     };
     const codingPatch = codingOn
       ? { enabled: true, leetcode_username: leetUser.trim(), gfg_username: gfgUser.trim() }
       : (startCoding ? { enabled: false } : null);
-    onSave(form, codingPatch);
+    const whoopPatch = fitnessOn ? { min_duration_min: minDur } : null;
+    onSave(form, codingPatch, whoopPatch);
   };
 
   const codingTotal = (coding && ((coding.leetcode_total || 0) + (coding.gfg_total || 0))) || 0;
@@ -1167,11 +1326,13 @@ function HabitModal({ initial, coding, syncing, onSave, onDelete, onClose }) {
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Reading" maxLength={40} style={field} autoFocus />
         </div>
 
-        {/* Coding sync — auto-fill this habit from LeetCode + GeeksForGeeks. */}
+        {/* Advanced — connect this habit to an external data source. */}
         <div style={{ marginBottom: 16, padding: 14, borderRadius: 12, background: 'var(--surface-0)', border: '1px solid var(--surface-line)' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--fg-3)', marginBottom: 12 }}>Advanced</div>
+
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-1)' }}>Sync from coding profiles</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-1)' }}>Coding habit</div>
               <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 3 }}>Auto-count unique problems solved each day.</div>
             </div>
             <Toggle on={codingOn} onChange={enableCoding} />
@@ -1193,9 +1354,59 @@ function HabitModal({ initial, coding, syncing, onSave, onDelete, onClose }) {
               </div>
             </div>
           )}
+
+          <div style={{ height: 1, background: 'var(--surface-line)', margin: '14px 0' }} />
+
+          {/* Fitness — a workout day comes from a connected wearable. */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-1)' }}>Fitness habit</div>
+              <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 3 }}>Mark a day done when you work out.</div>
+            </div>
+            <Toggle on={fitnessOn} onChange={enableFitness} />
+          </div>
+          {fitnessOn && (
+            <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <label style={lbl}>Connect a source</label>
+
+              {whoop && whoop.connected ? (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '11px 12px', borderRadius: 10, background: 'var(--surface-1)', border: `1px solid ${withAlpha(peakColor(hueOf(color)), 0.35)}` }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-1)' }}>WHOOP {'·'} connected</div>
+                    <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 2 }}>
+                      {whoop.whoop_name ? `${whoop.whoop_name} ${'·'} ` : ''}
+                      {whoop.backfill_status === 'running'
+                        ? `importing${'…'} ${whoop.backfill_progress} workouts`
+                        : (whoop.last_synced_at ? `synced ${relTime(whoop.last_synced_at)}` : 'not synced yet')}
+                    </div>
+                  </div>
+                  <button onClick={onDisconnectWhoop} className="auth-ghost-btn" style={{ flex: 'none', fontSize: 12, padding: '7px 12px', borderRadius: 999, cursor: 'pointer', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', color: 'var(--fg-2)' }}>Disconnect</button>
+                </div>
+              ) : (
+                <button onClick={startWhoopConnect} style={{ width: '100%', padding: '12px', borderRadius: 10, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 13, background: 'var(--surface-3)', border: '1.5px solid var(--teal)', color: '#fff' }}>Connect WHOOP</button>
+              )}
+
+              {/* Apple Health keeps data on-device with no cloud API, so a web app
+                  cannot read it. Say so rather than shipping a dead button. */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '11px 12px', borderRadius: 10, background: 'var(--surface-0)', border: '1px dashed var(--surface-line)', opacity: 0.6 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-2)' }}>Apple Health</div>
+                  <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 2 }}>Not available {'—'} Apple Health data never leaves your phone.</div>
+                </div>
+              </div>
+
+              <div>
+                <label style={lbl}>Minimum duration {'—'} {minDur} min</label>
+                <input type="range" min={5} max={60} step={5} value={minDur} onChange={(e) => setMinDur(Number(e.target.value))} style={{ width: '100%', accentColor: '#00F19F' }} />
+                <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 6, lineHeight: 1.5 }}>
+                  A day counts when one workout runs at least {minDur} minutes. Walking never counts, at any length. Changing this re-checks your whole history instantly.
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
-        {!codingOn && (
+        {!codingOn && !fitnessOn && (
         <div style={{ marginBottom: 16 }}>
           <label style={lbl}>Type</label>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -1214,7 +1425,7 @@ function HabitModal({ initial, coding, syncing, onSave, onDelete, onClose }) {
         </div>
         )}
 
-        {type === 'count' && !codingOn && (
+        {type === 'count' && !codingOn && !fitnessOn && (
           <div style={{ marginBottom: 16 }}>
             <label style={lbl}>Levels — {levels}</label>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -1369,6 +1580,9 @@ function App({ userId, email }) {
   const [coding, setCoding] = useState(DEFAULT_CODING);
   const [codingDaily, setCodingDaily] = useState({}); // { 'YYYY-MM-DD': {leetcode,gfg,manual} }
   const [syncing, setSyncing] = useState(false);
+  const [whoop, setWhoop] = useState(DEFAULT_WHOOP);
+  const [fitnessManual, setFitnessManual] = useState({}); // { 'YYYY-MM-DD': true }
+  const [whoopWorkouts, setWhoopWorkouts] = useState({}); // { 'YYYY-MM-DD': [ {...} ] }
 
   const habit = habits.find((h) => h.id === activeId) || null;
   const data = habit ? (store[habit.id] || {}) : {};
@@ -1377,10 +1591,14 @@ function App({ userId, email }) {
   /* Load habits + entries + settings on mount; subscribe to live changes on all tables. */
   useEffect(() => {
     let mounted = true;
-    Promise.all([fetchHabits(), fetchStore(), fetchSettings(), fetchCodingProfile(), fetchCodingDaily()]).then(([hs, s, st, cp, cd]) => {
-      if (!mounted) return;
-      setHabits(hs); setStore(s); setSettings(st); setCoding(cp); setCodingDaily(cd); applyPrimaryColor(st.primary_color); setSynced(true);
-    });
+    Promise.all([fetchHabits(), fetchStore(), fetchSettings(), fetchCodingProfile(), fetchCodingDaily(),
+                 fetchWhoopConnection(), fetchFitnessManual(), fetchWhoopWorkouts()])
+      .then(([hs, s, st, cp, cd, wc, fm, ww]) => {
+        if (!mounted) return;
+        setHabits(hs); setStore(s); setSettings(st); setCoding(cp); setCodingDaily(cd);
+        setWhoop(wc); setFitnessManual(fm); setWhoopWorkouts(ww);
+        applyPrimaryColor(st.primary_color); setSynced(true);
+      });
     const eChannel = sb.channel('habit_entries_rt')
       .on('postgres_changes', { event: '*', schema: 'public', table: TABLE },
         (payload) => { if (mounted) setStore((prev) => applyRealtime(prev, payload)); })
@@ -1401,7 +1619,41 @@ function App({ userId, email }) {
       .on('postgres_changes', { event: '*', schema: 'public', table: CODING_DAILY_TABLE },
         () => { fetchCodingDaily().then((cd) => { if (mounted) setCodingDaily(cd); }); })
       .subscribe();
-    return () => { mounted = false; sb.removeChannel(eChannel); sb.removeChannel(hChannel); sb.removeChannel(sChannel); sb.removeChannel(cChannel); sb.removeChannel(cdChannel); };
+    const wChannel = sb.channel('whoop_connections_rt')
+      .on('postgres_changes', { event: '*', schema: 'public', table: WHOOP_TABLE },
+        () => { fetchWhoopConnection().then((w) => { if (mounted) setWhoop(w); }); })
+      .subscribe();
+    const wwChannel = sb.channel('whoop_workouts_rt')
+      .on('postgres_changes', { event: '*', schema: 'public', table: WHOOP_WORKOUTS_TABLE },
+        () => { fetchWhoopWorkouts().then((w) => { if (mounted) setWhoopWorkouts(w); }); })
+      .subscribe();
+    const fmChannel = sb.channel('fitness_manual_rt')
+      .on('postgres_changes', { event: '*', schema: 'public', table: FITNESS_MANUAL_TABLE },
+        () => { fetchFitnessManual().then((m) => { if (mounted) setFitnessManual(m); }); })
+      .subscribe();
+    return () => {
+      mounted = false;
+      [eChannel, hChannel, sChannel, cChannel, cdChannel, wChannel, wwChannel, fmChannel]
+        .forEach((ch) => sb.removeChannel(ch));
+    };
+  }, []);
+
+  /* WHOOP OAuth return: the edge function redirects here with ?whoop=connected.
+     Kick off the 12-month backfill, then strip the param so a refresh can't re-fire it. */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const w = params.get('whoop');
+    if (!w) return;
+    window.history.replaceState({}, '', window.location.pathname);
+    if (w === 'connected') {
+      setSyncing(true);
+      triggerWhoopSync('backfill').then(() => {
+        Promise.all([fetchStore(), fetchWhoopConnection(), fetchWhoopWorkouts()])
+          .then(([s, wc, ww]) => { setStore(s); setWhoop(wc); setWhoopWorkouts(ww); setSyncing(false); });
+      });
+    } else if (w === 'error') {
+      console.error('WHOOP connect failed:', params.get('reason'));
+    }
   }, []);
 
   const saveAppSettings = (patch) => {
@@ -1435,6 +1687,37 @@ function App({ userId, email }) {
       Promise.all([fetchStore(), fetchCodingProfile(), fetchCodingDaily()]).then(([s, cp, cd]) => { setStore(s); setCoding(cp); setCodingDaily(cd); setSyncing(false); });
     });
   };
+
+  const refreshWhoop = () => {
+    if (syncing) return;
+    setSyncing(true);
+    triggerWhoopSync('recent').then(() => {
+      Promise.all([fetchStore(), fetchWhoopConnection(), fetchWhoopWorkouts()])
+        .then(([s, wc, ww]) => { setStore(s); setWhoop(wc); setWhoopWorkouts(ww); setSyncing(false); });
+    });
+  };
+
+  const onDisconnectWhoop = () => {
+    disconnectWhoop().then(() => fetchWhoopConnection().then(setWhoop));
+  };
+
+  /* Toggle the hand-marked component of a fitness day. A day stays green while EITHER
+     WHOOP or the manual mark claims it, so removing a mark can't erase a synced day. */
+  const onFitnessManual = useCallback((key, on) => {
+    setFitnessManual((prev) => {
+      const next = { ...prev };
+      if (on) next[key] = true; else delete next[key];
+      return next;
+    });
+    const autoGreen = whoopQualifies(whoopWorkouts[key], whoop);
+    setStore((prev) => {
+      const hd = { ...(prev[activeId] || {}) };
+      if (on || autoGreen) hd[key] = { v: 1, note: (hd[key] && hd[key].note) || '' };
+      else delete hd[key];
+      return { ...prev, [activeId]: hd };
+    });
+    saveFitnessManual(userId, key, on);
+  }, [activeId, userId, whoopWorkouts, whoop]);
 
   /* Adjust the manual component of a coding day (optimistic; trigger recomputes the heatmap). */
   const onCodingManual = useCallback((key, newManual, autoSum) => {
@@ -1473,21 +1756,38 @@ function App({ userId, email }) {
     persistEntry(activeId, key, entry, userId);
   }, [activeId, userId]);
 
-  const saveHabit = (form, codingPatch) => {
+  const saveHabit = (form, codingPatch, whoopPatch) => {
     if (modal && modal.habit) {
       const id = modal.habit.id;
+      // Turning an existing habit into a fitness one: its hand-logged days become manual
+      // marks, or the recompute trigger would wipe them on the first WHOOP sync.
+      if (form.source === 'fitness' && modal.habit.source !== 'fitness') {
+        const rows = Object.entries(store[id] || {})
+          .filter(([, e]) => e && e.v > 0)
+          .map(([day]) => ({ user_id: userId, day, value: 1, updated_at: new Date().toISOString() }));
+        if (rows.length) {
+          sb.from(FITNESS_MANUAL_TABLE).upsert(rows, { onConflict: 'user_id,day' })
+            .then(({ error }) => {
+              if (error) console.error('Fitness migration failed:', error.message);
+              else fetchFitnessManual().then(setFitnessManual);
+            });
+        }
+      }
       const updated = rowToHabit({ ...modal.habit, ...form });
       setHabits((prev) => prev.map((h) => (h.id === id ? updated : h)));
-      updateHabit(id, { name: form.name, type: form.type, levels: form.levels, unit: form.unit, icon: form.icon, color: form.color, source: form.source || null });
+      updateHabit(id, { name: form.name, type: form.type, levels: form.levels, unit: form.unit, icon: form.icon, color: form.color, source: form.source || null, fitness_kind: form.fitness_kind || null });
     } else {
-      // A coding habit uses a deterministic id so it pairs 1:1 with the coding profile.
-      const id = form.source === 'coding' ? `coding-${userId}` : slugify(form.name);
+      // Coding and fitness habits use deterministic ids so they pair 1:1 with their profile row.
+      const id = form.source === 'coding' ? `coding-${userId}`
+               : form.source === 'fitness' ? `fitness-${userId}`
+               : slugify(form.name);
       const sort_order = habits.length ? Math.max(...habits.map((h) => h.sort_order)) + 1 : 0;
       setHabits((prev) => [...prev.filter((h) => h.id !== id), rowToHabit({ id, ...form, sort_order })]);
       setActiveId(id);
       insertHabit({ id, ...form, sort_order }, userId);
     }
     if (codingPatch) runCodingSync(codingPatch);
+    if (whoopPatch) saveWhoopSettings(whoopPatch, userId).then(() => fetchWhoopConnection().then(setWhoop));
     setModal(null);
   };
 
@@ -1582,6 +1882,20 @@ function App({ userId, email }) {
                 </motion.span>
               </button>
             )}
+            {habit.source === 'fitness' && whoop.connected && (
+              <button onClick={refreshWhoop} disabled={syncing} title={syncing ? 'Syncing…' : 'Refresh from WHOOP'}
+                className="auth-ghost-btn" style={{ width: 38, height: 38, borderRadius: 999, flex: 'none', cursor: syncing ? 'default' : 'pointer', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)', color: syncing ? 'var(--teal)' : 'var(--fg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <motion.span style={{ display: 'flex' }} animate={syncing ? { rotate: 360 } : { rotate: 0 }} transition={syncing ? { repeat: Infinity, duration: 0.9, ease: 'linear' } : { duration: 0 }}>
+                  <Icon name="refresh" size={16} />
+                </motion.span>
+              </button>
+            )}
+            {habit.source === 'fitness' && !whoop.connected && (
+              <button onClick={startWhoopConnect} title="Reconnect WHOOP"
+                className="auth-ghost-btn" style={{ flex: 'none', fontSize: 12, fontWeight: 700, padding: '8px 13px', borderRadius: 999, cursor: 'pointer', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', color: 'var(--fg-2)' }}>
+                Reconnect WHOOP
+              </button>
+            )}
             <button onClick={() => setModal({ habit })} title="Edit habit"
               className="auth-ghost-btn" style={{ width: 38, height: 38, borderRadius: 999, flex: 'none', cursor: 'pointer', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)', color: 'var(--fg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <Icon name="pencil" size={16} />
@@ -1593,7 +1907,10 @@ function App({ userId, email }) {
           </div>
         </div>
         <Heatmap habit={habit} data={data} weeks={displayWeeks} onSet={onSet}
-          codingDaily={habit.source === 'coding' ? codingDaily : null} onCodingManual={onCodingManual} onCodingNote={onCodingNote} />
+          codingDaily={habit.source === 'coding' ? codingDaily : null} onCodingManual={onCodingManual} onCodingNote={onCodingNote}
+          whoopWorkouts={habit.source === 'fitness' ? whoopWorkouts : null}
+          fitnessManual={habit.source === 'fitness' ? fitnessManual : null}
+          whoop={whoop} onFitnessManual={onFitnessManual} />
         <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 14, display: 'flex', alignItems: 'center', gap: 7 }}>
           <Icon name="pencil" size={13} color="var(--fg-3)" />
           <span>Click any day to log {habit.name} and add a note {'\u00b7'} hover to review</span>
@@ -1626,7 +1943,7 @@ function App({ userId, email }) {
 
       <AnimatePresence>
         {modal && (
-          <HabitModal key="habit-modal" initial={modal.habit} coding={coding} syncing={syncing} onSave={saveHabit} onDelete={removeHabit} onClose={() => setModal(null)} />
+          <HabitModal key="habit-modal" initial={modal.habit} coding={coding} whoop={whoop} syncing={syncing} onSave={saveHabit} onDelete={removeHabit} onDisconnectWhoop={onDisconnectWhoop} onClose={() => setModal(null)} />
         )}
         {settingsOpen && (
           <SettingsModal key="settings-modal" settings={settings} email={email} onSave={saveAppSettings} onSignOut={() => sb.auth.signOut()} onClose={cancelSettings} />
