@@ -475,7 +475,7 @@ const WHOOP_TABLE = 'whoop_connections';
 const FITNESS_MANUAL_TABLE = 'fitness_manual';
 const WHOOP_WORKOUTS_TABLE = 'whoop_workouts';
 const DEFAULT_WHOOP = { connected: false, whoop_name: null, min_duration_min: 20, min_strain: 6,
-  excluded_sports: ['walking', 'other-recovery', 'increase_relaxation'],
+  excluded_sports: ['walking', 'increase_relaxation'],
   last_synced_at: null, last_sync_status: null,
   backfill_status: 'none', backfill_progress: 0 };
 
@@ -1453,7 +1453,7 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
                 <label style={lbl}>Minimum strain {'—'} {minStrain === 0 ? 'off' : minStrain}</label>
                 <input type="range" min={0} max={14} step={1} value={minStrain} onChange={(e) => setMinStrain(Number(e.target.value))} style={{ width: '100%', accentColor: '#00F19F' }} />
                 <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 6, lineHeight: 1.5 }}>
-                  A day counts when one workout runs at least {minDur} minutes{minStrain > 0 ? ` and reaches strain ${minStrain}` : ''}. The strain floor drops low-effort sessions that WHOOP filed under its generic {'"'}Activity{'"'} label. Walking and recovery never count, at any length. Changing either re-checks your whole history instantly.
+                  A day counts when one workout runs at least {minDur} minutes{minStrain > 0 ? ` and reaches strain ${minStrain}` : ''}. The strain floor drops low-effort sessions that WHOOP filed under its generic {'"'}Activity{'"'} label. Walking never counts, at any length. Changing either re-checks your whole history instantly.
                 </div>
               </div>
             </div>
