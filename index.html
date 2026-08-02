@@ -526,6 +526,14 @@ async function disconnectWhoop() {
   } catch (e) { console.error('WHOOP disconnect failed:', e); return { ok: false }; }
 }
 
+/* Re-materialize every stored workout onto the heatmap. Needed because the per-row trigger
+   silently no-ops for workouts written before the habit became source='fitness'. */
+async function repairFitnessDays() {
+  const { data, error } = await sb.rpc('recompute_my_fitness_days');
+  if (error) { console.error('Fitness repair failed:', error.message); return 0; }
+  return data || 0;
+}
+
 async function triggerWhoopSync(mode) {
   try {
     const { data, error } = await sb.functions.invoke('whoop-sync', { body: { mode: mode || 'recent' } });
@@ -1289,7 +1297,7 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
     if (v) { setCodingOn(false); setType('binary'); if (!name.trim()) setName('Workout'); if (icon === 'target') setIcon('dumbbell'); }
   };
 
-  const submit = () => {
+  const submit = (opts) => {
     if (!canSave) return;
     const form = {
       name: name.trim(),
@@ -1304,7 +1312,7 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
       ? { enabled: true, leetcode_username: leetUser.trim(), gfg_username: gfgUser.trim() }
       : (startCoding ? { enabled: false } : null);
     const whoopPatch = fitnessOn ? { min_duration_min: minDur } : null;
-    onSave(form, codingPatch, whoopPatch);
+    onSave(form, codingPatch, whoopPatch, (opts && opts.thenConnect) || false);
   };
 
   const codingTotal = (coding && ((coding.leetcode_total || 0) + (coding.gfg_total || 0))) || 0;
@@ -1383,7 +1391,12 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
                   <button onClick={onDisconnectWhoop} className="auth-ghost-btn" style={{ flex: 'none', fontSize: 12, padding: '7px 12px', borderRadius: 999, cursor: 'pointer', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', color: 'var(--fg-2)' }}>Disconnect</button>
                 </div>
               ) : (
-                <button onClick={startWhoopConnect} style={{ width: '100%', padding: '12px', borderRadius: 10, cursor: 'pointer', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 13, background: 'var(--surface-3)', border: '1.5px solid var(--teal)', color: '#fff' }}>Connect WHOOP</button>
+                /* Save the habit BEFORE leaving for WHOOP's consent screen. Navigating away
+                   with the form unsaved leaves habits.source null, and the recompute trigger
+                   then no-ops on every backfilled workout — the whole year lands in the DB
+                   but never reaches the heatmap. */
+                <button onClick={() => { if (canSave) submit({ thenConnect: true }); }} disabled={!canSave}
+                  style={{ width: '100%', padding: '12px', borderRadius: 10, cursor: canSave ? 'pointer' : 'default', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 13, background: canSave ? 'var(--surface-3)' : 'var(--surface-1)', border: canSave ? '1.5px solid var(--teal)' : '1.5px solid var(--surface-line-strong)', color: canSave ? '#fff' : 'var(--fg-disabled)' }}>Connect WHOOP</button>
               )}
 
               {/* Apple Health keeps data on-device with no cloud API, so a web app
@@ -1648,8 +1661,10 @@ function App({ userId, email }) {
     if (w === 'connected') {
       setSyncing(true);
       triggerWhoopSync('backfill').then(() => {
-        Promise.all([fetchStore(), fetchWhoopConnection(), fetchWhoopWorkouts()])
-          .then(([s, wc, ww]) => { setStore(s); setWhoop(wc); setWhoopWorkouts(ww); setSyncing(false); });
+        Promise.all([fetchStore(), fetchWhoopConnection(), fetchWhoopWorkouts(), fetchFitnessManual()])
+          .then(([s, wc, ww, fm]) => {
+            setStore(s); setWhoop(wc); setWhoopWorkouts(ww); setFitnessManual(fm); setSyncing(false);
+          });
       });
     } else if (w === 'error') {
       console.error('WHOOP connect failed:', params.get('reason'));
@@ -1688,12 +1703,17 @@ function App({ userId, email }) {
     });
   };
 
+  /* Resume from last_synced_at (the edge function picks the window), then reconcile the
+     whole history so nothing can stay stranded. Full backfill happens automatically if
+     the connection never completed one. */
   const refreshWhoop = () => {
     if (syncing) return;
     setSyncing(true);
     triggerWhoopSync('recent').then(() => {
-      Promise.all([fetchStore(), fetchWhoopConnection(), fetchWhoopWorkouts()])
-        .then(([s, wc, ww]) => { setStore(s); setWhoop(wc); setWhoopWorkouts(ww); setSyncing(false); });
+      Promise.all([fetchStore(), fetchWhoopConnection(), fetchWhoopWorkouts(), fetchFitnessManual()])
+        .then(([s, wc, ww, fm]) => {
+          setStore(s); setWhoop(wc); setWhoopWorkouts(ww); setFitnessManual(fm); setSyncing(false);
+        });
     });
   };
 
@@ -1756,7 +1776,8 @@ function App({ userId, email }) {
     persistEntry(activeId, key, entry, userId);
   }, [activeId, userId]);
 
-  const saveHabit = (form, codingPatch, whoopPatch) => {
+  const saveHabit = (form, codingPatch, whoopPatch, thenConnect) => {
+    const writes = [];
     if (modal && modal.habit) {
       const id = modal.habit.id;
       // Turning an existing habit into a fitness one: its hand-logged days become manual
@@ -1766,16 +1787,16 @@ function App({ userId, email }) {
           .filter(([, e]) => e && e.v > 0)
           .map(([day]) => ({ user_id: userId, day, value: 1, updated_at: new Date().toISOString() }));
         if (rows.length) {
-          sb.from(FITNESS_MANUAL_TABLE).upsert(rows, { onConflict: 'user_id,day' })
+          writes.push(sb.from(FITNESS_MANUAL_TABLE).upsert(rows, { onConflict: 'user_id,day' })
             .then(({ error }) => {
               if (error) console.error('Fitness migration failed:', error.message);
               else fetchFitnessManual().then(setFitnessManual);
-            });
+            }));
         }
       }
       const updated = rowToHabit({ ...modal.habit, ...form });
       setHabits((prev) => prev.map((h) => (h.id === id ? updated : h)));
-      updateHabit(id, { name: form.name, type: form.type, levels: form.levels, unit: form.unit, icon: form.icon, color: form.color, source: form.source || null, fitness_kind: form.fitness_kind || null });
+      writes.push(updateHabit(id, { name: form.name, type: form.type, levels: form.levels, unit: form.unit, icon: form.icon, color: form.color, source: form.source || null, fitness_kind: form.fitness_kind || null }));
     } else {
       // Coding and fitness habits use deterministic ids so they pair 1:1 with their profile row.
       const id = form.source === 'coding' ? `coding-${userId}`
@@ -1784,11 +1805,23 @@ function App({ userId, email }) {
       const sort_order = habits.length ? Math.max(...habits.map((h) => h.sort_order)) + 1 : 0;
       setHabits((prev) => [...prev.filter((h) => h.id !== id), rowToHabit({ id, ...form, sort_order })]);
       setActiveId(id);
-      insertHabit({ id, ...form, sort_order }, userId);
+      writes.push(insertHabit({ id, ...form, sort_order }, userId));
     }
     if (codingPatch) runCodingSync(codingPatch);
-    if (whoopPatch) saveWhoopSettings(whoopPatch, userId).then(() => fetchWhoopConnection().then(setWhoop));
+    if (whoopPatch) writes.push(saveWhoopSettings(whoopPatch, userId));
     setModal(null);
+
+    Promise.all(writes).then(() => {
+      // The habit is now persisted, so it is safe to hand off to WHOOP's consent screen.
+      if (thenConnect) { startWhoopConnect(); return; }
+      if (form.source === 'fitness') {
+        // Materialize any workouts already stored before this habit became a fitness habit.
+        repairFitnessDays().then(() => {
+          Promise.all([fetchStore(), fetchWhoopConnection(), fetchFitnessManual()])
+            .then(([s, wc, fm]) => { setStore(s); setWhoop(wc); setFitnessManual(fm); });
+        });
+      }
+    });
   };
 
   const removeHabit = (id) => {
