@@ -474,9 +474,19 @@ async function saveCodingNote(habitId, day, note) {
 const WHOOP_TABLE = 'whoop_connections';
 const FITNESS_MANUAL_TABLE = 'fitness_manual';
 const WHOOP_WORKOUTS_TABLE = 'whoop_workouts';
-const DEFAULT_WHOOP = { connected: false, whoop_name: null, min_duration_min: 20,
-  excluded_sports: ['Walking'], last_synced_at: null, last_sync_status: null,
+const DEFAULT_WHOOP = { connected: false, whoop_name: null, min_duration_min: 20, min_strain: 6,
+  excluded_sports: ['walking', 'other-recovery', 'increase_relaxation'],
+  last_synced_at: null, last_sync_status: null,
   backfill_status: 'none', backfill_progress: 0 };
+
+/* WHOOP sport slugs are machine-shaped ("weightlifting_msk", "hiit"); make them readable. */
+const SPORT_ACRONYMS = { hiit: 'HIIT', msk: 'MSK', mma: 'MMA', hrv: 'HRV' };
+function sportLabel(name) {
+  if (!name) return 'Workout';
+  return String(name).replace(/[_-]+/g, ' ').split(' ').filter(Boolean)
+    .map((w) => SPORT_ACRONYMS[w.toLowerCase()] || (w.charAt(0).toUpperCase() + w.slice(1)))
+    .join(' ');
+}
 
 /* Short "2m ago" style stamp for the connection status line. */
 function relTime(iso) {
@@ -491,7 +501,7 @@ function relTime(iso) {
 async function fetchWhoopConnection() {
   // RLS scopes this to the signed-in user's single row.
   const { data, error } = await sb.from(WHOOP_TABLE)
-    .select('connected, whoop_name, min_duration_min, excluded_sports, last_synced_at, last_sync_status, backfill_status, backfill_progress')
+    .select('connected, whoop_name, min_duration_min, min_strain, excluded_sports, last_synced_at, last_sync_status, backfill_status, backfill_progress')
     .maybeSingle();
   if (error) { console.error('WHOOP fetch failed:', error.message); return { ...DEFAULT_WHOOP }; }
   return { ...DEFAULT_WHOOP, ...(data || {}) };
@@ -571,12 +581,19 @@ async function fetchWhoopWorkouts() {
   return out;
 }
 
-/* Does this day have a WHOOP workout that clears the bar? Mirrors recompute_fitness_day. */
-function whoopQualifies(dayWorkouts, whoop) {
+/* Does one workout clear every bar? Mirrors recompute_fitness_day exactly — a null strain
+   means WHOOP hasn't scored it yet, so it passes rather than being wrongly dropped. */
+function workoutCounts(w, whoop) {
+  if (!w) return false;
   const min = (whoop && whoop.min_duration_min) || 20;
+  const minStrain = (whoop && whoop.min_strain != null) ? whoop.min_strain : 6;
   const excl = ((whoop && whoop.excluded_sports) || []).map((s) => String(s).toLowerCase());
-  return (dayWorkouts || []).some((w) => w.duration_min >= min
-    && !excl.includes(String(w.sport_name || '').toLowerCase()));
+  return w.duration_min >= min
+    && (w.strain == null || w.strain >= minStrain)
+    && !excl.includes(String(w.sport_name || '').toLowerCase());
+}
+function whoopQualifies(dayWorkouts, whoop) {
+  return (dayWorkouts || []).some((w) => workoutCounts(w, whoop));
 }
 
 /* Recolor the app's primary accent by overriding the CSS variable used throughout. */
@@ -674,7 +691,7 @@ function monthLabels(weeks) {
 }
 
 /* Tooltip */
-function Tooltip({ habit, date, entry, breakdown, workouts, manualOn, rect }) {
+function Tooltip({ habit, date, entry, breakdown, workouts, manualOn, whoop, rect }) {
   if (!rect) return null;
   const W = 210;
   const left = Math.min(window.innerWidth - W - 8, Math.max(8, rect.left + rect.width / 2 - W / 2));
@@ -708,12 +725,15 @@ function Tooltip({ habit, date, entry, breakdown, workouts, manualOn, rect }) {
         </div>
       ) : isFitness ? (
         <div style={{ marginTop: 7, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12, color: 'var(--fg-2)' }}>
-          {wk.map((w, i) => (
-            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{w.sport_name || 'Workout'}</span>
-              <span className="whoop-num" style={{ flex: 'none' }}>{Math.round(w.duration_min)}m</span>
-            </div>
-          ))}
+          {wk.map((w, i) => {
+            const counts = workoutCounts(w, whoop);
+            return (
+              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, opacity: counts ? 1 : 0.45 }}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: counts ? 'none' : 'line-through' }}>{sportLabel(w.sport_name)}</span>
+                <span className="whoop-num" style={{ flex: 'none' }}>{Math.round(w.duration_min)}m</span>
+              </div>
+            );
+          })}
           {manualOn && <div style={{ color: 'var(--fg-3)' }}>Marked by hand</div>}
           {!wk.length && !manualOn && <div style={{ color: 'var(--fg-disabled)', fontStyle: 'italic' }}>No workouts</div>}
           {entry && entry.note ? <div style={{ marginTop: 3, lineHeight: 1.35 }}>{entry.note}</div> : null}
@@ -743,7 +763,7 @@ function RoundBtn({ icon, onClick, disabled }) {
   );
 }
 
-function Editor({ habit, date, entry, breakdown, workouts, manualOn, autoGreen, onChange, onManual, onNote, onFitnessManual, onClose }) {
+function Editor({ habit, date, entry, breakdown, workouts, manualOn, autoGreen, whoop, onChange, onManual, onNote, onFitnessManual, onClose }) {
   // Close on Escape for keyboard users.
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -822,7 +842,21 @@ function Editor({ habit, date, entry, breakdown, workouts, manualOn, autoGreen, 
             </button>
             {(wk.length > 0 || autoGreen) && (
               <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 9, padding: '13px 14px', borderRadius: 12, background: 'var(--surface-0)', border: '1px solid var(--surface-line)' }}>
-                {wk.map((w, i) => srcRow(w.sport_name || 'Workout', `${Math.round(w.duration_min)}m`, habit.accent))}
+                {wk.map((w, i) => {
+                  const counts = workoutCounts(w, whoop);
+                  return (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 13, opacity: counts ? 1 : 0.5 }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--fg-2)', minWidth: 0 }}>
+                        <span style={{ width: 8, height: 8, borderRadius: 2, flex: 'none', background: counts ? habit.accent : 'var(--fg-disabled)' }} />
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sportLabel(w.sport_name)}</span>
+                      </span>
+                      <span style={{ display: 'flex', alignItems: 'baseline', gap: 7, flex: 'none' }}>
+                        {!counts && <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>Not counted</span>}
+                        <span className="whoop-num" style={{ fontSize: 16, color: 'var(--fg-1)' }}>{Math.round(w.duration_min)}m</span>
+                      </span>
+                    </div>
+                  );
+                })}
                 {!wk.length && <div style={{ fontSize: 12, color: 'var(--fg-3)' }}>No WHOOP workouts on this day.</div>}
               </div>
             )}
@@ -964,7 +998,7 @@ function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCod
       {hover && !sel && <Tooltip habit={habit} date={hover.date} entry={data[hover.key]}
         breakdown={codingDaily && codingDaily[hover.key]}
         workouts={whoopWorkouts && whoopWorkouts[hover.key]}
-        manualOn={!!(fitnessManual && fitnessManual[hover.key])} rect={hover.rect} />}
+        manualOn={!!(fitnessManual && fitnessManual[hover.key])} whoop={whoop} rect={hover.rect} />}
       <AnimatePresence>
         {sel && (
           <Editor key="cell-editor" habit={habit} date={sel.date} entry={data[sel.key]}
@@ -972,6 +1006,7 @@ function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCod
             workouts={whoopWorkouts && whoopWorkouts[sel.key]}
             manualOn={!!(fitnessManual && fitnessManual[sel.key])}
             autoGreen={whoopWorkouts ? whoopQualifies(whoopWorkouts[sel.key], whoop) : false}
+            whoop={whoop}
             onChange={(e) => onSet(sel.key, e)} onManual={onCodingManual} onNote={onCodingNote}
             onFitnessManual={onFitnessManual}
             onClose={() => setSel(null)} />
@@ -1286,6 +1321,7 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
   // Fitness sync: one integration at a time, so coding and fitness are mutually exclusive.
   const [fitnessOn, setFitnessOn] = useState(startFitness);
   const [minDur, setMinDur] = useState((whoop && whoop.min_duration_min) || 20);
+  const [minStrain, setMinStrain] = useState((whoop && whoop.min_strain != null) ? Number(whoop.min_strain) : 6);
   const canSave = name.trim().length > 0 && (!codingOn || leetUser.trim() || gfgUser.trim());
 
   const enableCoding = (v) => {
@@ -1311,7 +1347,7 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
     const codingPatch = codingOn
       ? { enabled: true, leetcode_username: leetUser.trim(), gfg_username: gfgUser.trim() }
       : (startCoding ? { enabled: false } : null);
-    const whoopPatch = fitnessOn ? { min_duration_min: minDur } : null;
+    const whoopPatch = fitnessOn ? { min_duration_min: minDur, min_strain: minStrain } : null;
     onSave(form, codingPatch, whoopPatch, (opts && opts.thenConnect) || false);
   };
 
@@ -1411,8 +1447,13 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
               <div>
                 <label style={lbl}>Minimum duration {'—'} {minDur} min</label>
                 <input type="range" min={5} max={60} step={5} value={minDur} onChange={(e) => setMinDur(Number(e.target.value))} style={{ width: '100%', accentColor: '#00F19F' }} />
+              </div>
+
+              <div>
+                <label style={lbl}>Minimum strain {'—'} {minStrain === 0 ? 'off' : minStrain}</label>
+                <input type="range" min={0} max={14} step={1} value={minStrain} onChange={(e) => setMinStrain(Number(e.target.value))} style={{ width: '100%', accentColor: '#00F19F' }} />
                 <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 6, lineHeight: 1.5 }}>
-                  A day counts when one workout runs at least {minDur} minutes. Walking never counts, at any length. Changing this re-checks your whole history instantly.
+                  A day counts when one workout runs at least {minDur} minutes{minStrain > 0 ? ` and reaches strain ${minStrain}` : ''}. The strain floor drops low-effort sessions that WHOOP filed under its generic {'"'}Activity{'"'} label. Walking and recovery never count, at any length. Changing either re-checks your whole history instantly.
                 </div>
               </div>
             </div>
