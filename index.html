@@ -583,14 +583,19 @@ async function fetchWhoopWorkouts() {
 
 /* Does one workout clear every bar? Mirrors recompute_fitness_day exactly — a null strain
    means WHOOP hasn't scored it yet, so it passes rather than being wrongly dropped. */
+/* "activity" is WHOOP's generic auto-detect bucket — anything it could not name.
+   That is the only place the strain floor belongs: a sport you deliberately
+   labelled (weightlifting, swimming, …) is real training whatever the strain. */
+const GENERIC_SPORTS = ['activity'];
 function workoutCounts(w, whoop) {
   if (!w) return false;
   const min = (whoop && whoop.min_duration_min) || 20;
   const minStrain = (whoop && whoop.min_strain != null) ? whoop.min_strain : 6;
   const excl = ((whoop && whoop.excluded_sports) || []).map((s) => String(s).toLowerCase());
+  const sport = String(w.sport_name || '').toLowerCase();
   return w.duration_min >= min
-    && (w.strain == null || w.strain >= minStrain)
-    && !excl.includes(String(w.sport_name || '').toLowerCase());
+    && (!GENERIC_SPORTS.includes(sport) || w.strain == null || w.strain >= minStrain)
+    && !excl.includes(sport);
 }
 function whoopQualifies(dayWorkouts, whoop) {
   return (dayWorkouts || []).some((w) => workoutCounts(w, whoop));
@@ -730,7 +735,7 @@ function Tooltip({ habit, date, entry, breakdown, workouts, manualOn, whoop, rec
             return (
               <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, opacity: counts ? 1 : 0.45 }}>
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: counts ? 'none' : 'line-through' }}>{sportLabel(w.sport_name)}</span>
-                <span className="whoop-num" style={{ flex: 'none' }}>{Math.round(w.duration_min)}m</span>
+                <span className="whoop-num" style={{ flex: 'none' }}>{w.strain != null ? `${Number(w.strain).toFixed(1)} ${'·'} ` : ''}{Math.round(w.duration_min)}m</span>
               </div>
             );
           })}
@@ -852,6 +857,7 @@ function Editor({ habit, date, entry, breakdown, workouts, manualOn, autoGreen, 
                       </span>
                       <span style={{ display: 'flex', alignItems: 'baseline', gap: 7, flex: 'none' }}>
                         {!counts && <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>Not counted</span>}
+                        {w.strain != null && <span className="whoop-num" style={{ fontSize: 13, color: 'var(--fg-3)' }}>{Number(w.strain).toFixed(1)} strain</span>}
                         <span className="whoop-num" style={{ fontSize: 16, color: 'var(--fg-1)' }}>{Math.round(w.duration_min)}m</span>
                       </span>
                     </div>
@@ -1453,7 +1459,7 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
                 <label style={lbl}>Minimum strain {'—'} {minStrain === 0 ? 'off' : minStrain}</label>
                 <input type="range" min={0} max={14} step={1} value={minStrain} onChange={(e) => setMinStrain(Number(e.target.value))} style={{ width: '100%', accentColor: '#00F19F' }} />
                 <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 6, lineHeight: 1.5 }}>
-                  A day counts when one workout runs at least {minDur} minutes{minStrain > 0 ? ` and reaches strain ${minStrain}` : ''}. The strain floor drops low-effort sessions that WHOOP filed under its generic {'"'}Activity{'"'} label. Walking never counts, at any length. Changing either re-checks your whole history instantly.
+                  A day counts when one workout runs at least {minDur} minutes.{minStrain > 0 ? ` Sessions WHOOP could only file under its generic "Activity" label must also reach strain ${minStrain} — a sport you named (weightlifting, swimming, …) counts on duration alone.` : ''} Walking never counts, at any length. Changing either re-checks your whole history instantly.
                 </div>
               </div>
             </div>
