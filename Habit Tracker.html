@@ -104,17 +104,21 @@
     ::-webkit-scrollbar { height: 8px; width: 8px; }
     ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 999px; }
 
-    /* Ambient drifting light blobs behind everything */
+    /* Ambient light blobs behind everything.
+       ⚠️ These are deliberately STATIC — do NOT re-add a drift animation.
+       They sit (position:fixed, z-index 0) behind every frosted-glass surface in the
+       app, and backdrop-filter recomputes whenever its backdrop changes. An always-on
+       animation here meant all ~10 glass cards re-blurred their backdrop EVERY FRAME,
+       forever, on every screen — which made hover and typing feel laggy even though
+       JS was idle. Static backdrop = blurred once, then cached. */
     body::before, body::after {
       content: ''; position: fixed; border-radius: 50%;
-      filter: blur(90px); opacity: 0.10; pointer-events: none; z-index: 0; will-change: transform;
+      filter: blur(90px); opacity: 0.10; pointer-events: none; z-index: 0;
     }
     body::before { width: 46vw; height: 46vw; max-width: 560px; max-height: 560px; background: var(--teal);
-      top: -14vw; left: -10vw; animation: drift1 24s ease-in-out infinite alternate; }
+      top: -14vw; left: -10vw; }
     body::after  { width: 50vw; height: 50vw; max-width: 600px; max-height: 600px; background: var(--recovery-blue);
-      bottom: -18vw; right: -12vw; animation: drift2 30s ease-in-out infinite alternate; }
-    @keyframes drift1 { to { transform: translate(14vw, 9vw) scale(1.15); } }
-    @keyframes drift2 { to { transform: translate(-11vw, -7vw) scale(1.10); } }
+      bottom: -18vw; right: -12vw; }
 
     #root { position: relative; z-index: 1; }
 
@@ -2047,8 +2051,10 @@ if (!document.getElementById('auth-keyframes')) {
   _s.id = 'auth-keyframes';
   _s.textContent = [
     '@keyframes cellPulse{0%,100%{opacity:var(--baseOp);}50%{opacity:calc(var(--baseOp)*1.7);}}',
-    '@keyframes orbDrift{0%{transform:translate3d(0,0,0) scale(1);}50%{transform:translate3d(40px,-30px,0) scale(1.12);}100%{transform:translate3d(-24px,22px,0) scale(0.96);}}',
-    '.auth-orb{position:absolute;border-radius:50%;filter:blur(90px);pointer-events:none;animation:orbDrift 22s cubic-bezier(.45,0,.55,1) infinite alternate;}',
+    /* Static for the same reason as body::before/::after — these sit directly behind the
+       backdrop-filter auth card, so animating them re-blurred the card on every frame
+       while the user was typing into it. Do NOT re-add orbDrift. */
+    '.auth-orb{position:absolute;border-radius:50%;filter:blur(90px);pointer-events:none;}',
     '.auth-cta{transition:transform .18s cubic-bezier(.32,.72,0,1), box-shadow .25s ease, opacity .2s ease;}',
     '.auth-cta:active{transform:scale(.98)!important;}',
     `.auth-cta:focus-visible,.auth-ghost-btn:focus-visible{outline:2px solid ${AUTH_ACCENT};outline-offset:3px;}`,
@@ -2109,6 +2115,10 @@ function StreakGrid({ accent }) {
     if (!wrap || !grid) return;
     const host = wrap.parentElement || wrap;      // whole brand panel presses the surface
     const nodes = Array.from(grid.children);
+    // Base opacity per cell, so the sink can dim via --baseOp (which cellPulse reads)
+    // instead of filter:brightness(). A filter forces the cell onto its own render
+    // surface and re-rasterizes it; --baseOp just feeds the existing opacity animation.
+    const baseOp = cells.map((c) => (c.level === 0 ? 1 : ramp[c.level]));
     let centers = null, mouse = null, raf = 0;
     const measure = () => { centers = nodes.map((n) => { const r = n.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }); };
     const unmeasure = () => { centers = null; };
@@ -2118,14 +2128,14 @@ function StreakGrid({ accent }) {
       if (!centers) measure();
       for (let i = 0; i < nodes.length; i++) {
         const st = nodes[i].style;
-        if (!mouse) { if (st.transform) { st.transform = ''; st.filter = ''; } continue; }
+        if (!mouse) { if (st.transform) { st.transform = ''; st.setProperty('--baseOp', baseOp[i]); } continue; }
         const dx = centers[i][0] - mouse[0], dy = centers[i][1] - mouse[1];
         const d = Math.hypot(dx, dy);
-        if (d >= R) { if (st.transform) { st.transform = ''; st.filter = ''; } continue; }
+        if (d >= R) { if (st.transform) { st.transform = ''; st.setProperty('--baseOp', baseOp[i]); } continue; }
         const t = 1 - d / R, s = t * t * (3 - 2 * t);
         const push = 7 * s, ux = d ? dx / d : 0, uy = d ? dy / d : 0;
         st.transform = `translate(${(ux * push).toFixed(2)}px, ${(uy * push).toFixed(2)}px) scale(${(1 - 0.36 * s).toFixed(3)})`;
-        st.filter = `brightness(${(1 - 0.42 * s).toFixed(3)})`;
+        st.setProperty('--baseOp', (baseOp[i] * (1 - 0.42 * s)).toFixed(3));
       }
     };
     const schedule = () => { if (!raf) raf = requestAnimationFrame(apply); };
@@ -2144,7 +2154,7 @@ function StreakGrid({ accent }) {
         {cells.map((cell, i) => {
           const op = cell.level === 0 ? 1 : ramp[cell.level];
           const bg = cell.level === 0 ? 'rgba(255,255,255,0.045)' : accent;
-          return <div key={i} style={{ borderRadius: 5, background: bg, opacity: op, animation: `cellPulse 4.2s ease-in-out ${cell.wave * 0.35}s infinite`, boxShadow: cell.glow ? `0 0 14px ${accent}` : 'none', ['--baseOp']: op, transition: 'transform .3s cubic-bezier(.25,.6,.3,1), filter .3s ease' }} />;
+          return <div key={i} style={{ borderRadius: 5, background: bg, opacity: op, animation: `cellPulse 4.2s ease-in-out ${cell.wave * 0.35}s infinite`, boxShadow: cell.glow ? `0 0 14px ${accent}` : 'none', ['--baseOp']: op, transition: 'transform .3s cubic-bezier(.25,.6,.3,1)' }} />;
         })}
       </div>
     </div>
