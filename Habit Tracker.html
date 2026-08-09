@@ -2036,7 +2036,10 @@ function App({ userId, email }) {
 /* ============================================================
    AUTH — email/password gate (Supabase Auth)
    ============================================================ */
-const AUTH_ACCENT = '#16EC06';
+// Auth screen accent toggle: true = blue (current), false = original WHOOP green. Flip to revert.
+const AUTH_ACCENT_BLUE = true;
+const AUTH_ACCENT = AUTH_ACCENT_BLUE ? '#0093E7' : '#16EC06';
+const AUTH_ACCENT_BRIGHT = AUTH_ACCENT_BLUE ? '#4fc3ff' : '#3dff2e';
 
 // Auth-screen CSS layer: heatmap pulse, drifting glow orbs, CTA press/focus states (injected once).
 if (!document.getElementById('auth-keyframes')) {
@@ -2048,7 +2051,7 @@ if (!document.getElementById('auth-keyframes')) {
     '.auth-orb{position:absolute;border-radius:50%;filter:blur(90px);pointer-events:none;animation:orbDrift 22s cubic-bezier(.45,0,.55,1) infinite alternate;}',
     '.auth-cta{transition:transform .18s cubic-bezier(.32,.72,0,1), box-shadow .25s ease, opacity .2s ease;}',
     '.auth-cta:active{transform:scale(.98)!important;}',
-    '.auth-cta:focus-visible,.auth-ghost-btn:focus-visible{outline:2px solid #16EC06;outline-offset:3px;}',
+    `.auth-cta:focus-visible,.auth-ghost-btn:focus-visible{outline:2px solid ${AUTH_ACCENT};outline-offset:3px;}`,
     '.auth-ghost-btn{transition:background .2s ease, border-color .2s ease, transform .18s cubic-bezier(.32,.72,0,1);}',
     '.auth-ghost-btn:active{transform:scale(.985);}',
     '.auth-card-inner input::placeholder{color:rgba(255,255,255,0.45);font-weight:500;}',
@@ -2161,7 +2164,7 @@ function StreakBadge({ accent }) {
   return (
     <div style={{ display: 'inline-block', padding: 5, borderRadius: 999, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.09)' }}>
       <div style={{ display: 'inline-flex', alignItems: 'center', gap: 12, padding: '10px 20px 10px 12px', borderRadius: 999, background: 'rgba(7,10,12,0.72)', border: '1px solid rgba(255,255,255,0.06)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08)', backdropFilter: 'blur(14px)', WebkitBackdropFilter: 'blur(14px)' }}>
-        <span style={{ width: 36, height: 36, borderRadius: 999, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(22,236,6,0.13)', boxShadow: `inset 0 0 0 1px rgba(22,236,6,0.25), 0 0 18px ${accent}2e` }}>
+        <span style={{ width: 36, height: 36, borderRadius: 999, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: withAlpha(accent, 0.13), boxShadow: `inset 0 0 0 1px ${withAlpha(accent, 0.25)}, 0 0 18px ${withAlpha(accent, 0.18)}` }}>
           <Icon name="flame" size={18} color={accent} stroke={2.2} />
         </span>
         <div style={{ lineHeight: 1 }}>
@@ -2198,7 +2201,7 @@ function AuthCta({ busy, label, accent }) {
   return (
     <button type="submit" disabled={busy} className="auth-cta"
       onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
-      style={{ position: 'relative', height: 56, borderRadius: 999, border: 'none', cursor: busy ? 'default' : 'pointer', background: h && !busy ? `linear-gradient(180deg, #3dff2e 0%, ${accent} 100%)` : accent, color: '#04150a', fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 14.5, letterSpacing: '.12em', textTransform: 'uppercase', display: 'flex', alignItems: 'center', justifyContent: 'center', whiteSpace: 'nowrap', padding: '0 60px 0 28px', opacity: busy ? 0.7 : 1, boxShadow: h && !busy ? `0 0 0 1px ${accent}, 0 14px 44px ${accent}52, inset 0 1px 0 rgba(255,255,255,0.35)` : `0 0 30px ${accent}38, inset 0 1px 0 rgba(255,255,255,0.3)`, transform: h && !busy ? 'translateY(-1px)' : 'none' }}>
+      style={{ position: 'relative', height: 56, borderRadius: 999, border: 'none', cursor: busy ? 'default' : 'pointer', background: h && !busy ? `linear-gradient(180deg, ${AUTH_ACCENT_BRIGHT} 0%, ${accent} 100%)` : accent, color: '#04150a', fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 14.5, letterSpacing: '.12em', textTransform: 'uppercase', display: 'flex', alignItems: 'center', justifyContent: 'center', whiteSpace: 'nowrap', padding: '0 60px 0 28px', opacity: busy ? 0.7 : 1, boxShadow: h && !busy ? `0 0 0 1px ${accent}, 0 14px 44px ${accent}52, inset 0 1px 0 rgba(255,255,255,0.35)` : `0 0 30px ${accent}38, inset 0 1px 0 rgba(255,255,255,0.3)`, transform: h && !busy ? 'translateY(-1px)' : 'none' }}>
       {busy ? 'Please wait…' : label}
       {!busy && (
         <span style={{ position: 'absolute', right: 10, top: '50%', width: 36, height: 36, borderRadius: 999, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(3,20,9,0.18)', boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.18)', transform: h ? 'translate(2px,-50%) scale(1.06)' : 'translate(0,-50%)', transition: 'transform .22s cubic-bezier(.32,.72,0,1)' }}>
@@ -2234,15 +2237,15 @@ function AuthBrandPanel({ head, sub, mobile }) {
 
       {/* top: logo */}
       <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 14 }}>
-        <svg width="22" height="22" viewBox="0 0 64 64" aria-hidden="true" style={{ display: 'block', flex: 'none', filter: 'drop-shadow(0 0 10px rgba(22,236,6,0.35))' }}>
-          <rect x="8" y="8" width="22" height="22" rx="6" fill="#16EC06" opacity="0.35" />
-          <rect x="34" y="8" width="22" height="22" rx="6" fill="#16EC06" opacity="0.7" />
-          <rect x="8" y="34" width="22" height="22" rx="6" fill="#16EC06" opacity="0.5" />
-          <rect x="34" y="34" width="22" height="22" rx="6" fill="#16EC06" />
+        <svg width="22" height="22" viewBox="0 0 64 64" aria-hidden="true" style={{ display: 'block', flex: 'none', filter: `drop-shadow(0 0 10px ${withAlpha(accent, 0.35)})` }}>
+          <rect x="8" y="8" width="22" height="22" rx="6" fill={accent} opacity="0.35" />
+          <rect x="34" y="8" width="22" height="22" rx="6" fill={accent} opacity="0.7" />
+          <rect x="8" y="34" width="22" height="22" rx="6" fill={accent} opacity="0.5" />
+          <rect x="34" y="34" width="22" height="22" rx="6" fill={accent} />
         </svg>
         <span style={{ fontSize: 13, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', color: '#fff' }}>Habit Tracker</span>
         <span style={{ width: 1, height: 22, background: 'var(--surface-line-strong)' }} />
-        <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '.04em', color: 'var(--fg-2)', whiteSpace: 'nowrap' }}>By Dhimant</span>
+        <span style={{ fontSize: 12.5, fontWeight: 600, letterSpacing: '.04em', color: 'var(--fg-2)', whiteSpace: 'nowrap' }}>By IRAA</span>
       </div>
 
       {/* bottom: badge + headline */}
@@ -2300,7 +2303,7 @@ function AuthScreen() {
   const [busy, setBusy] = useState(false);
 
   // The previous user's accent may linger on --teal; reset to default on the login screen.
-  useEffect(() => { applyPrimaryColor('#16EC06'); }, []);
+  useEffect(() => { applyPrimaryColor(AUTH_ACCENT); }, []);
 
   const go = (m) => { setMode(m); setErr(''); setMsg(''); };
   const social = async () => {
@@ -2412,7 +2415,7 @@ function UpdatePasswordScreen({ onDone }) {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => { applyPrimaryColor('#16EC06'); }, []);
+  useEffect(() => { applyPrimaryColor(AUTH_ACCENT); }, []);
 
   const submit = async (e) => {
     if (e) e.preventDefault();
