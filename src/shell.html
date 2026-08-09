@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#070a0c">
+  <title>Habit Tracker</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23070a0c'/%3E%3Crect x='11' y='11' width='19' height='19' rx='5' fill='%2316EC06' opacity='.35'/%3E%3Crect x='34' y='11' width='19' height='19' rx='5' fill='%2316EC06' opacity='.7'/%3E%3Crect x='11' y='34' width='19' height='19' rx='5' fill='%2316EC06' opacity='.5'/%3E%3Crect x='34' y='34' width='19' height='19' rx='5' fill='%2316EC06'/%3E%3C/svg%3E">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+
+  <!-- Google Fonts (substitutes for Proxima Nova + DINPro) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300..900;1,300..900&family=Barlow+Semi+Condensed:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <style>
+    /* ============================================================
+       Design tokens — WHOOP design system
+       ============================================================ */
+    :root {
+      --font-sans: 'Figtree', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      --font-num:  'Barlow Semi Condensed', 'Figtree', Helvetica, Arial, sans-serif;
+
+      --whoop-black: #000000;
+      --whoop-white: #FFFFFF;
+
+      --teal:           #00F19F;
+      --strain:         #0093E7;
+      --recovery-high:  #16EC06;
+      --recovery-med:   #FFDE00;
+      --recovery-low:   #FF0026;
+      --sleep:          #7BA1BB;
+      --recovery-blue:  #67AEE6;
+
+      --bg-grad-top:    #131c18;
+      --bg-grad-bottom: #050708;
+      --app-bg: radial-gradient(135% 120% at 22% -10%, #131c18 0%, #0a0f12 55%, #050708 100%);
+
+      --surface-0: #0A0E11;
+      --surface-1: #141A1F;
+      --surface-2: #1E262C;
+      --surface-3: #2A333A;
+      --surface-line: rgba(255, 255, 255, 0.08);
+      --surface-line-strong: rgba(255, 255, 255, 0.16);
+
+      --fg-1: #FFFFFF;
+      --fg-2: rgba(255, 255, 255, 0.62);
+      --fg-3: rgba(255, 255, 255, 0.38);
+      --fg-disabled: rgba(255, 255, 255, 0.22);
+
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --radius-xl: 24px;
+      --radius-pill: 999px;
+
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 24px;
+      --space-6: 32px;
+      --space-7: 48px;
+      --space-8: 64px;
+
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-md: 0 6px 24px rgba(0, 0, 0, 0.40);
+      --shadow-lg: 0 18px 50px rgba(0, 0, 0, 0.55);
+      --glow-teal: 0 0 24px rgba(0, 241, 159, 0.35);
+
+      --ease: cubic-bezier(0.16, 1, 0.3, 1);
+      /* frosted-glass card surface */
+      --glass: linear-gradient(180deg, rgba(24, 31, 36, 0.62), rgba(11, 15, 18, 0.66));
+      --glass-hover: linear-gradient(180deg, rgba(32, 41, 47, 0.68), rgba(15, 20, 24, 0.7));
+      --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+    }
+
+    /* Semantic type */
+    .whoop-h1 { font-family: var(--font-sans); font-weight: 800; font-size: 44px; line-height: 1.04; letter-spacing: 0.10em; text-transform: uppercase; color: var(--fg-1); }
+    .whoop-h2 { font-family: var(--font-sans); font-weight: 700; font-size: 30px; line-height: 1.1; letter-spacing: 0.10em; text-transform: uppercase; color: var(--fg-1); }
+    .whoop-h3 { font-family: var(--font-sans); font-weight: 700; font-size: 20px; line-height: 1.15; letter-spacing: 0.10em; text-transform: uppercase; color: var(--fg-1); }
+    .whoop-eyebrow { font-family: var(--font-sans); font-weight: 700; font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--fg-3); }
+    .whoop-b1 { font-family: var(--font-sans); font-weight: 600; font-size: 18px; line-height: 1.5; color: var(--fg-1); }
+    .whoop-b2 { font-family: var(--font-sans); font-weight: 600; font-size: 16px; line-height: 1.5; color: var(--fg-1); }
+    .whoop-b3 { font-family: var(--font-sans); font-weight: 500; font-size: 14px; line-height: 1.45; color: var(--fg-2); }
+    .whoop-b4 { font-family: var(--font-sans); font-weight: 500; font-size: 12px; line-height: 1.4; color: var(--fg-2); }
+    .whoop-num { font-family: var(--font-num); font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.01em; color: var(--fg-1); }
+
+    /* Base */
+    html, body { margin: 0; min-height: 100%; }
+    html { background: #070a0c; }   /* Safari paints overscroll + chrome from this — keep it dark */
+    body {
+      background: var(--app-bg);
+      min-height: 100vh;
+      overflow-anchor: none;
+      min-height: 100dvh;
+      font-family: var(--font-sans);
+      color: var(--fg-1);
+      -webkit-font-smoothing: antialiased;
+    }
+    * { box-sizing: border-box; }
+    ::selection { background: rgba(22, 236, 6, 0.28); }
+    textarea::placeholder { color: var(--fg-disabled); }
+    ::-webkit-scrollbar { height: 8px; width: 8px; }
+    ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 999px; }
+
+    /* Ambient light blobs behind everything.
+       ⚠️ These are deliberately STATIC — do NOT re-add a drift animation.
+       They sit (position:fixed, z-index 0) behind every frosted-glass surface in the
+       app, and backdrop-filter recomputes whenever its backdrop changes. An always-on
+       animation here meant all ~10 glass cards re-blurred their backdrop EVERY FRAME,
+       forever, on every screen — which made hover and typing feel laggy even though
+       JS was idle. Static backdrop = blurred once, then cached. */
+    body::before, body::after {
+      content: ''; position: fixed; border-radius: 50%;
+      filter: blur(90px); opacity: 0.10; pointer-events: none; z-index: 0;
+    }
+    body::before { width: 46vw; height: 46vw; max-width: 560px; max-height: 560px; background: var(--teal);
+      top: -14vw; left: -10vw; }
+    body::after  { width: 50vw; height: 50vw; max-width: 600px; max-height: 600px; background: var(--recovery-blue);
+      bottom: -18vw; right: -12vw; }
+
+    #root { position: relative; z-index: 1; }
+
+    /* Hide scrollbar (used by the horizontally-scrollable habit tabs) */
+    .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+    .hm-cell { transition: transform .1s, background .2s; }
+    .hm-cell:hover { transform: scale(1.25); }
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+
+    /* Press feedback on every button */
+    button { transition: transform 0.08s var(--ease); }
+    button:active:not(:disabled) { transform: scale(0.97); }
+
+    @media (prefers-reduced-motion: reduce) {
+      body::before, body::after { animation: none !important; }
+      *, *::before, *::after {
+        animation-duration: 0.001ms !important; animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important; scroll-behavior: auto !important;
+      }
+    }
+  </style>
+
+  <!-- ESM import map so the app + framer-motion share ONE React instance (no build step) -->
+  <!-- React + framer-motion + supabase-js, bundled locally by build.js (src/vendor.js).
+       These were fetched at runtime from esm.sh as ~196 separate ES modules plus one from
+       unpkg — every visitor paid that waterfall on every load, and the app is gated on it,
+       so the screen stayed blank until it all arrived. Now: one same-origin cached file.
+       `defer` keeps it off the parser; vendor.js dispatches framer-ready, which the app
+       block at the end of <body> is already gated on, so ordering is safe either way. -->
+  <script defer src="vendor.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+<!--APP-->
+</body>
+</html>

@@ -1,5 +1,16 @@
 {
-  "dependencies": {
-    "framer-motion": "^12.40.0"
+  "name": "habit-tracker",
+  "private": true,
+  "scripts": {
+    "build": "node build.js"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "@babel/preset-react": "^7.26.0",
+    "@supabase/supabase-js": "^2.47.0",
+    "esbuild": "^0.24.0",
+    "framer-motion": "11.11.17",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
   }
 }
