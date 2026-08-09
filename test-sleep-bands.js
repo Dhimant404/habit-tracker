@@ -47,5 +47,38 @@ console.assert(rampIndex(sleep, 0) === 0, 'no sleep must leave the cell empty');
 console.assert(rampIndex({ source: null }, 4) === 4, 'non-sleep habits must be untouched');
 console.assert(SLEEP_LEVELS === 5, 'exactly five shades');
 
+/* Aggregates must sum exact time, never the floored per-day hours. Two 6h30m nights
+   are 13 hours; adding the floored 6 + 6 would report 12. This is the bug that
+   motivated exactDayValues(), so it gets a test. */
+const exactDayValues = (sleepByDay) => {
+  const out = {};
+  for (const day in sleepByDay) {
+    let mins = 0;
+    for (const r of sleepByDay[day]) mins += r.total_sleep_min || 0;
+    if (mins > 0) out[day] = mins / 60;
+  }
+  return out;
+};
+const fmtTotal = (n) => {
+  const r = Math.round(n * 10) / 10;
+  return Number.isInteger(r) ? String(r) : r.toFixed(1);
+};
+
+const week = {
+  'd1': [{ total_sleep_min: 390 }],                       // 6h30m
+  'd2': [{ total_sleep_min: 390 }],                       // 6h30m
+};
+const exact = exactDayValues(week);
+const exactTotal = Object.values(exact).reduce((a, b) => a + b, 0);
+const flooredTotal = Object.values(week)
+  .reduce((a, rows) => a + Math.floor(rows.reduce((x, r) => x + r.total_sleep_min, 0) / 60), 0);
+
+if (exactTotal !== 13) { console.error(`FAIL two 6h30m nights summed to ${exactTotal}, expected 13`); failed++; }
+if (flooredTotal !== 12) { console.error('FAIL the floored path was expected to under-report as 12'); failed++; }
+console.assert(fmtTotal(13) === '13', 'whole totals show no decimal');
+console.assert(fmtTotal(12.75) === '12.8', 'fractional totals show one decimal');
+console.assert(exactDayValues({ d: [{ total_sleep_min: 0 }] }).d === undefined, 'zero-minute days are omitted');
+
 if (failed) { console.error(`\n${failed} failure(s)`); process.exit(1); }
-console.log(`${cases.length} cases pass — floor + 5 bands correct.`);
+console.log(`${cases.length} band cases pass — floor + 5 bands correct.`);
+console.log(`aggregate check passes — 6h30m + 6h30m = ${exactTotal}h exact (floored path would say ${flooredTotal}h).`);

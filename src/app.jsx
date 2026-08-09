@@ -928,25 +928,53 @@ function valOf(habit, entry) {
   return habit.type === 'binary' ? (entry.v ? 1 : 0) : entry.v;
 }
 
-function computeStats(habit, data, weeks, today) {
+/* Totals must sum EXACT time, not the heatmap's floored hours: two 6h30m nights are
+   13 hours, and adding the floored 6 + 6 would report 12. Sleep is the only habit whose
+   stored value is a rounded view of something finer — every other habit's value IS the
+   exact quantity — so this returns null for them and the normal path is untouched.
+   Built once per sleep-data change and looked up by key, so aggregating stays O(days). */
+function exactDayValues(habit, sleepByDay) {
+  if (!habit || habit.source !== 'sleep' || !sleepByDay) return null;
+  const out = {};
+  for (const day in sleepByDay) {
+    let mins = 0;
+    for (const r of sleepByDay[day]) mins += r.total_sleep_min || 0;
+    if (mins > 0) out[day] = mins / 60;
+  }
+  return out;
+}
+
+/* Sums can now be fractional. Show a decimal only when it carries information. */
+function fmtTotal(n) {
+  const r = Math.round(n * 10) / 10;
+  return Number.isInteger(r) ? String(r) : r.toFixed(1);
+}
+
+function computeStats(habit, data, weeks, today, exact) {
+  // Exact time where we have it; the stored value otherwise (and for every non-sleep habit).
+  const val = (d) => {
+    const key = keyOf(d);
+    if (exact) { const e = exact[key]; if (e != null) return e; }
+    return valOf(habit, data[key]);
+  };
   const weekTotal = (offset) => {
     const col = weeks[52 - offset];
     if (!col) return 0;
-    return col.reduce((s, d) => s + (d ? valOf(habit, data[keyOf(d)]) : 0), 0);
+    return col.reduce((s, d) => s + (d ? val(d) : 0), 0);
   };
   const thisWeek = weekTotal(0);
   const lastWeek = weekTotal(1);
   const prior4 = [1, 2, 3, 4].map(weekTotal);
   const avg4 = prior4.reduce((a, b) => a + b, 0) / 4;
 
-  const active = (d) => valOf(habit, data[keyOf(d)]) > 0;
+  const active = (d) => val(d) > 0;
   let cur = 0, cursor = startOfDay(today);
   if (!active(cursor)) cursor = addDays(cursor, -1);
   while (active(cursor)) { cur++; cursor = addDays(cursor, -1); }
 
   let longest = 0, run = 0, activeDays = 0, yearTotal = 0;
   weeks.flat().filter(Boolean).forEach((d) => {
-    const v = valOf(habit, data[keyOf(d)]);
+    const v = val(d);
     if (v > 0) { activeDays++; yearTotal += v; run++; longest = Math.max(longest, run); }
     else run = 0;
   });
@@ -1012,7 +1040,7 @@ function TrendCard({ habit, stats }) {
           return (
             <div key={i} onMouseEnter={() => setHi(i)}
               style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, cursor: 'default' }}>
-              <span className="whoop-num" style={{ fontSize: 12, color: lit ? accent : 'var(--fg-3)', fontWeight: 700, textShadow: lit ? `0 0 12px ${withAlpha(accent, 0.5)}` : 'none', transition: 'color .15s' }}>{v}</span>
+              <span className="whoop-num" style={{ fontSize: 12, color: lit ? accent : 'var(--fg-3)', fontWeight: 700, textShadow: lit ? `0 0 12px ${withAlpha(accent, 0.5)}` : 'none', transition: 'color .15s' }}>{fmtTotal(v)}</span>
               <motion.div key={habit.id + '-' + i}
                 initial={{ scaleY: 0 }} animate={{ scaleY: 1 }}
                 transition={{ delay: 0.15 + i * 0.055, duration: 0.5, ease: [0.22, 0.9, 0.3, 1] }}
@@ -1040,7 +1068,9 @@ function TrendCard({ habit, stats }) {
 function StatsStrip({ habit, stats }) {
   const mobile = useIsMobile();
   const accent = habit.accent;
-  const avgRounded = habit.type === 'binary' ? stats.avg4.toFixed(1) : Math.round(stats.avg4);
+  const avgRounded = habit.type === 'binary' ? stats.avg4.toFixed(1)
+    : habit.source === 'sleep' ? fmtTotal(stats.avg4)   // keep other count habits on whole numbers
+    : Math.round(stats.avg4);
   return (
     <div style={{ display: 'grid', gridTemplateColumns: mobile ? '1fr' : '1.1fr 1fr 1fr 1.6fr', gap: mobile ? 12 : 16, alignItems: 'stretch' }}>
       <StatCard
@@ -1067,13 +1097,16 @@ function rangeLabel(a, b) {
   return `${MONTHS[a.getMonth()]} ${a.getDate()} \u2013 ${right}`;
 }
 
-function DayGlance({ habit, date, entry, future, isToday }) {
+function DayGlance({ habit, date, entry, future, isToday, exactV }) {
   const v = entry ? entry.v : 0;
   const done = habit.type === 'binary' ? !!v : v > 0;
   const bright = habit.type === 'binary' || v >= 4;
   const bg = future ? 'transparent' : cellColor(habit, entry);
   const note = entry && entry.note ? entry.note : '';
-  const title = future ? '' : `${fmtLong(date)} \u00b7 ${habit.type === 'binary' ? (done ? 'done' : 'rest') : v + ' ' + habit.unit}${note ? ' \u00b7 ' + note : ''}`;
+  // Show exact time where we have it, so 6h30m reads 6.5 and the seven circles sum
+  // to the week total printed above them rather than appearing to fall short.
+  const shown = exactV != null ? fmtTotal(exactV) : v;
+  const title = future ? '' : `${fmtLong(date)} \u00b7 ${habit.type === 'binary' ? (done ? 'done' : 'rest') : shown + ' ' + habit.unit}${note ? ' \u00b7 ' + note : ''}`;
   return (
     <div title={title} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, minWidth: 0 }}>
       <span style={{ fontSize: 11, fontWeight: 700, color: isToday ? 'var(--teal)' : 'var(--fg-3)' }}>{WD_LETTERS[(date.getDay() + 6) % 7]}</span>
@@ -1087,14 +1120,14 @@ function DayGlance({ habit, date, entry, future, isToday }) {
       }}>
         {habit.type === 'binary'
           ? (done && <Icon name="check" size={20} color="#04261a" stroke={2.4} />)
-          : (!future && <span className="whoop-num" style={{ fontSize: 18, color: v ? (bright ? '#04261a' : '#fff') : 'var(--fg-disabled)' }}>{v}</span>)}
+          : (!future && <span className="whoop-num" style={{ fontSize: shown.toString().length > 2 ? 15 : 18, color: v ? (bright ? '#04261a' : '#fff') : 'var(--fg-disabled)' }}>{shown}</span>)}
       </div>
       <span style={{ fontSize: 10, fontWeight: 600, color: isToday ? 'var(--fg-2)' : 'var(--fg-3)' }}>{date.getDate()}</span>
     </div>
   );
 }
 
-function WeekBlock({ habit, label, monday, data, today, total, delta, nav }) {
+function WeekBlock({ habit, label, monday, data, today, total, delta, nav, exact }) {
   const days = weekDates(monday);
   const accent = habit.accent;
   return (
@@ -1110,14 +1143,14 @@ function WeekBlock({ habit, label, monday, data, today, total, delta, nav }) {
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flex: 'none' }}>
           {delta}
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
-            <span className="whoop-num" style={{ fontSize: 30, lineHeight: 1, color: accent }}>{total}</span>
+            <span className="whoop-num" style={{ fontSize: 30, lineHeight: 1, color: accent }}>{fmtTotal(total)}</span>
             <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-3)' }}>{habit.unit}</span>
           </div>
         </div>
       </div>
       <div style={{ display: 'flex', gap: 7 }}>
         {days.map((d, i) => (
-          <DayGlance key={i} habit={habit} date={d} entry={data[keyOf(d)]} future={d > today} isToday={keyOf(d) === keyOf(today)} />
+          <DayGlance key={i} habit={habit} date={d} entry={data[keyOf(d)]} future={d > today} isToday={keyOf(d) === keyOf(today)} exactV={exact ? exact[keyOf(d)] : null} />
         ))}
       </div>
     </div>
@@ -1136,21 +1169,26 @@ function WeekNavBtn({ icon, onClick, disabled, label }) {
 
 const weekTitle = (weeksAgo) => weeksAgo === 0 ? 'This week' : weeksAgo === 1 ? 'Last week' : `${weeksAgo} weeks ago`;
 
-function WeekReport({ habit, data, today }) {
+function WeekReport({ habit, data, today, exact }) {
   const mobile = useIsMobile();
   const [back, setBack] = useState(1);              // left block: how many weeks ago (1 = last week)
   const MAX_BACK = 50;                              // stay inside the 52-week data horizon
   useEffect(() => { setBack(1); }, [habit.id]);
   const thisMon = mondayOf(today);
   const leftMon = addDays(thisMon, -7 * back);
-  const sum = (mon) => weekDates(mon).reduce((s, d) => s + (d <= today ? valOf(habit, data[keyOf(d)]) : 0), 0);
+  const sum = (mon) => weekDates(mon).reduce((s, d) => {
+    if (d > today) return s;
+    const key = keyOf(d);
+    const e = exact && exact[key];
+    return s + (e != null ? e : valOf(habit, data[key]));
+  }, 0);
   const leftTotal = sum(leftMon);
   const thisTotal = sum(thisMon);
   return (
     <Card pad={mobile ? 18 : 26} style={{ marginTop: 16 }}>
       <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>{'Weekly report \u00b7 Mon \u2192 Sun'}</span>
       <div style={{ display: 'flex', flexDirection: mobile ? 'column' : 'row', gap: mobile ? 24 : 40, marginTop: 20, alignItems: 'stretch' }}>
-        <WeekBlock habit={habit} label={weekTitle(back)} monday={leftMon} data={data} today={today} total={leftTotal}
+        <WeekBlock habit={habit} label={weekTitle(back)} monday={leftMon} data={data} today={today} total={leftTotal} exact={exact}
           delta={back > 1 ? <Delta now={leftTotal} base={sum(addDays(leftMon, -7))} /> : null}
           nav={
             <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -1165,7 +1203,7 @@ function WeekReport({ habit, data, today }) {
             </div>
           } />
         <div style={{ flex: 'none', background: 'var(--surface-line)', ...(mobile ? { height: 1, width: '100%' } : { width: 1, alignSelf: 'stretch' }) }} />
-        <WeekBlock habit={habit} label="This week" monday={thisMon} data={data} today={today} total={thisTotal}
+        <WeekBlock habit={habit} label="This week" monday={thisMon} data={data} today={today} total={thisTotal} exact={exact}
           delta={<Delta now={thisTotal} base={leftTotal} />} />
       </div>
     </Card>
@@ -1649,7 +1687,8 @@ function App({ userId, email }) {
 
   const habit = habits.find((h) => h.id === activeId) || null;
   const data = habit ? (store[habit.id] || {}) : {};
-  const stats = useMemo(() => (habit ? computeStats(habit, data, weeks, today) : null), [habit, data, weeks, today]);
+  const exactValues = useMemo(() => exactDayValues(habit, whoopSleep), [habit, whoopSleep]);
+  const stats = useMemo(() => (habit ? computeStats(habit, data, weeks, today, exactValues) : null), [habit, data, weeks, today, exactValues]);
 
   /* Load habits + entries + settings on mount; subscribe to live changes on all tables. */
   useEffect(() => {
@@ -1899,7 +1938,7 @@ function App({ userId, email }) {
   const displayWeeks = mobile ? weeks.slice(-17) : weeks;
   const yearlySummary = habit && (habit.type === 'binary'
     ? `${stats.activeDays} ${habit.unit} logged in the last year`
-    : `${stats.yearTotal} ${habit.unit} across ${stats.activeDays} active days in the last year`);
+    : `${fmtTotal(stats.yearTotal)} ${habit.unit} across ${stats.activeDays} active days in the last year`);
 
   const newHabitBtn = (
     <button onClick={() => setModal({ habit: null })} title="Add a habit" className="auth-ghost-btn"
@@ -2017,7 +2056,7 @@ function App({ userId, email }) {
       </Card>
 
       {/* two-week glance — directly under heatmap */}
-      <WeekReport habit={habit} data={data} today={today} />
+      <WeekReport habit={habit} data={data} today={today} exact={exactValues} />
 
       {/* stats */}
       <div style={{ marginTop: 16 }}>
