@@ -526,15 +526,29 @@ function useIsMobile(bp = 760) {
    ============================================================ */
 const CELL = 14, GAP = 3, STEP = CELL + GAP;
 
+/* Sleep is a measurement, not a tally: habit_entries.value is real hours slept (so the
+   "N hours" stats stay honest), but the heatmap only needs a few meaningful bands.
+   These are the upper edges — under 6h, 6-7, 7-8, 8-9, 9+ — giving SLEEP_LEVELS shades. */
+const SLEEP_BANDS = [6, 7, 8, 9];
+const SLEEP_LEVELS = SLEEP_BANDS.length + 1;
+const SLEEP_BAND_LABELS = ['under 6h', '6\u20137h', '7\u20138h', '8\u20139h', '9h+'];
+/* Where a value sits on the colour ramp. Identity for ordinary count habits. */
+function rampIndex(habit, v) {
+  if (habit.source !== 'sleep') return v;
+  if (v <= 0) return 0;
+  let i = 0;
+  while (i < SLEEP_BANDS.length && v >= SLEEP_BANDS[i]) i++;
+  return i + 1;
+}
 function cellColor(habit, entry) {
   const v = entry ? entry.v : 0;
   if (v <= 0) return EMPTY_CELL;
   if (habit.type === 'binary') return peakColor(hueOf(habit.color));
-  return rampColor(habit.color, habit.levels || 5, v);
+  return rampColor(habit.color, habit.levels || 5, rampIndex(habit, v));
 }
 function isMax(habit, entry) {
   if (!entry || !entry.v) return false;
-  return habit.type === 'binary' ? true : entry.v >= (habit.levels || 5);
+  return habit.type === 'binary' ? true : rampIndex(habit, entry.v) >= (habit.levels || 5);
 }
 function singular(u) { return u && u.endsWith('s') ? u.slice(0, -1) : u; }
 function unitLabel(habit, v) { return v === 1 ? singular(habit.unit) : habit.unit; }
@@ -739,7 +753,7 @@ function Editor({ habit, date, entry, breakdown, workouts, sleeps, manualOn, aut
             <div style={{ textAlign: 'center' }}>
               <div className="whoop-num" style={{ fontSize: 52, lineHeight: 1, color: v ? cellColor(habit, { v }) : 'var(--fg-3)' }}>{fmtSleep(sl)}</div>
               <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)', marginTop: 4 }}>
-                {sl.length ? `counts as ${v} ${v === 1 ? 'hour' : 'hours'}` : 'no sleep recorded'}
+                {sl.length ? SLEEP_BAND_LABELS[rampIndex(habit, v) - 1] || '' : 'no sleep recorded'}
               </div>
             </div>
             {sl.length > 0 && (
@@ -1281,8 +1295,8 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
       setType('binary'); if (!name.trim()) setName('Workout');
       if (icon === 'target') setIcon('dumbbell');
     } else if (next === 'sleep') {
-      setType('count'); setLevels(9); if (!name.trim()) setName('Sleep');
-      if (icon === 'target') setIcon('brain'); if (color === '#16EC06') setColor('#A855F7');
+      setType('count'); setLevels(SLEEP_LEVELS); if (!name.trim()) setName('Sleep');
+      if (icon === 'target') setIcon('moon'); if (color === '#16EC06') setColor('#A855F7');
     }
   };
 
@@ -1291,8 +1305,8 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
     const form = {
       name: name.trim(),
       type: codingOn ? 'count' : (fitnessOn ? 'binary' : (sleepOn ? 'count' : type)),
-      // Sleep is one shade per hour, so it wants the full 9 levels.
-      levels: codingOn ? 5 : (fitnessOn ? 1 : (sleepOn ? 9 : (type === 'count' ? levels : 1))),
+      // Sleep stores hours but shades them into SLEEP_LEVELS bands.
+      levels: codingOn ? 5 : (fitnessOn ? 1 : (sleepOn ? SLEEP_LEVELS : (type === 'count' ? levels : 1))),
       unit: codingOn ? 'solves' : (fitnessOn ? 'times' : (sleepOn ? 'hours' : (unit.trim() || 'times'))),
       icon, color,
       source: preset,
@@ -1336,7 +1350,7 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
             {[
               { key: 'coding', icon: 'code', label: 'Coding', sub: 'LeetCode · GFG' },
               { key: 'fitness', icon: 'dumbbell', label: 'Workouts', sub: 'WHOOP' },
-              { key: 'sleep', icon: 'brain', label: 'Sleep', sub: 'WHOOP' },
+              { key: 'sleep', icon: 'moon', label: 'Sleep', sub: 'WHOOP' },
             ].map((p) => {
               const on = preset === p.key;
               const accent = peakColor(hueOf(color));
@@ -1379,10 +1393,11 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
             <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
               <WhoopStatus whoop={whoop} color={color} needsSleep />
               <div style={{ fontSize: 12, color: 'var(--fg-3)', lineHeight: 1.5 }}>
-                Each day is shaded by <b>hours slept</b>, one shade per hour up to 9. A night
-                is filed on the day you <b>wake up</b>, so a late bedtime still counts for the
-                right morning. Naps are included. Your last 12 months are imported on connect,
-                then refreshed nightly.
+                Each day is shaded by <b>hours slept</b>, in five bands {'\u2014'} under 6h, 6{'\u2013'}7,
+                7{'\u2013'}8, 8{'\u2013'}9 and 9h+. Time rounds <b>down</b>, so 6h 59m counts as six hours.
+                A night is filed on the day you <b>wake up</b>, so a late bedtime still counts for
+                the right morning. Naps are included. Your last 12 months are imported on
+                connect, then refreshed nightly.
               </div>
             </div>
           )}
