@@ -304,6 +304,7 @@ async function saveCodingNote(habitId, day, note) {
 const WHOOP_TABLE = 'whoop_connections';
 const FITNESS_MANUAL_TABLE = 'fitness_manual';
 const WHOOP_WORKOUTS_TABLE = 'whoop_workouts';
+const WHOOP_SLEEP_TABLE = 'whoop_sleep';
 const DEFAULT_WHOOP = { connected: false, whoop_name: null, min_duration_min: 20, min_strain: 6,
   excluded_sports: ['walking', 'increase_relaxation'],
   last_synced_at: null, last_sync_status: null,
@@ -331,7 +332,7 @@ function relTime(iso) {
 async function fetchWhoopConnection() {
   // RLS scopes this to the signed-in user's single row.
   const { data, error } = await sb.from(WHOOP_TABLE)
-    .select('connected, whoop_name, min_duration_min, min_strain, excluded_sports, last_synced_at, last_sync_status, backfill_status, backfill_progress')
+    .select('connected, whoop_name, scopes, min_duration_min, min_strain, excluded_sports, last_synced_at, last_sync_status, backfill_status, backfill_progress')
     .maybeSingle();
   if (error) { console.error('WHOOP fetch failed:', error.message); return { ...DEFAULT_WHOOP }; }
   return { ...DEFAULT_WHOOP, ...(data || {}) };
@@ -374,6 +375,14 @@ async function repairFitnessDays() {
   return data || 0;
 }
 
+/* Same for sleep — recompute_sleep_day returns early when no source='sleep' habit
+   exists yet, so rows synced before the habit was created need this one-shot pass. */
+async function repairSleepDays() {
+  const { data, error } = await sb.rpc('recompute_my_sleep_days');
+  if (error) { console.error('Sleep repair failed:', error.message); return 0; }
+  return data || 0;
+}
+
 async function triggerWhoopSync(mode) {
   try {
     const { data, error } = await sb.functions.invoke('whoop-sync', { body: { mode: mode || 'recent' } });
@@ -402,6 +411,25 @@ async function saveFitnessManual(userId, day, on) {
 }
 
 /* Per-day workout detail for the tooltip + day editor: { 'YYYY-MM-DD': [ {...} ] }. */
+/* "7h 45m" — the heatmap shade is whole hours, so exact minutes only show here. */
+const fmtMin = (m) => {
+  const t = Math.round(m || 0);
+  return t >= 60 ? `${Math.floor(t / 60)}h ${String(t % 60).padStart(2, '0')}m` : `${t}m`;
+};
+const fmtSleep = (rows) => (rows && rows.length
+  ? fmtMin(rows.reduce((a, x) => a + (x.total_sleep_min || 0), 0)) : '—');
+
+/* Raw sleep records per wake-day, for the day editor's read-only breakdown. The
+   heatmap value is rounded to whole hours, so the exact minutes only live here. */
+async function fetchWhoopSleep() {
+  const out = {};
+  const { data, error } = await sb.from(WHOOP_SLEEP_TABLE)
+    .select('day, nap, total_sleep_min, rem_min, deep_min, light_min, efficiency_pct').order('start_at');
+  if (error) { console.error('WHOOP sleep fetch failed:', error.message); return out; }
+  (data || []).forEach((r) => { (out[r.day] = out[r.day] || []).push(r); });
+  return out;
+}
+
 async function fetchWhoopWorkouts() {
   const out = {};
   const { data, error } = await sb.from(WHOOP_WORKOUTS_TABLE)
@@ -526,7 +554,7 @@ function monthLabels(weeks) {
 }
 
 /* Tooltip */
-function Tooltip({ habit, date, entry, breakdown, workouts, manualOn, whoop, rect }) {
+function Tooltip({ habit, date, entry, breakdown, workouts, sleeps, manualOn, whoop, rect }) {
   if (!rect) return null;
   const W = 210;
   const left = Math.min(window.innerWidth - W - 8, Math.max(8, rect.left + rect.width / 2 - W / 2));
@@ -598,7 +626,7 @@ function RoundBtn({ icon, onClick, disabled }) {
   );
 }
 
-function Editor({ habit, date, entry, breakdown, workouts, manualOn, autoGreen, whoop, onChange, onManual, onNote, onFitnessManual, onClose }) {
+function Editor({ habit, date, entry, breakdown, workouts, sleeps, manualOn, autoGreen, whoop, onChange, onManual, onNote, onFitnessManual, onClose }) {
   // Close on Escape for keyboard users.
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -608,7 +636,9 @@ function Editor({ habit, date, entry, breakdown, workouts, manualOn, autoGreen, 
 
   const isCoding = habit.source === 'coding';
   const isFitness = habit.source === 'fitness';
+  const isSleep = habit.source === 'sleep';
   const wk = workouts || [];
+  const sl = sleeps || [];
   // Coding habit: total = leetcode + gfg + manual; the +/- adjusts only manual.
   const bd = breakdown || { leetcode: 0, gfg: 0, manual: 0 };
   const lc = bd.leetcode || 0, gfg = bd.gfg || 0, manual = bd.manual || 0;
@@ -619,7 +649,7 @@ function Editor({ habit, date, entry, breakdown, workouts, manualOn, autoGreen, 
   const note = entry ? entry.note || '' : '';
   const key = keyOf(date);
   const setV = (nv) => onChange({ v: Math.min(maxV, Math.max(0, nv)), note });
-  const setNote = (nn) => ((isCoding || isFitness) ? onNote(key, nn) : onChange({ v, note: nn }));
+  const setNote = (nn) => ((isCoding || isFitness || isSleep) ? onNote(key, nn) : onChange({ v, note: nn }));
   // Manual adjusts up without limit; down only until the day's total hits 0.
   const bumpManual = (delta) => onManual(key, Math.max(manual + delta, -auto), auto);
   const srcRow = (label, val, color) => (
@@ -702,6 +732,28 @@ function Editor({ habit, date, entry, breakdown, workouts, manualOn, autoGreen, 
                 : 'WHOOP syncs automatically; mark a day yourself when it missed one.'}
             </div>
           </div>
+        ) : isSleep ? (
+          /* Read-only: WHOOP owns this value. A hand-edit here would be silently
+             reverted by the next sync, so the editor reports instead of inviting one. */
+          <div>
+            <div style={{ textAlign: 'center' }}>
+              <div className="whoop-num" style={{ fontSize: 52, lineHeight: 1, color: v ? cellColor(habit, { v }) : 'var(--fg-3)' }}>{fmtSleep(sl)}</div>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)', marginTop: 4 }}>
+                {sl.length ? `counts as ${v} ${v === 1 ? 'hour' : 'hours'}` : 'no sleep recorded'}
+              </div>
+            </div>
+            {sl.length > 0 && (
+              <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 9, padding: '13px 14px', borderRadius: 12, background: 'var(--surface-0)', border: '1px solid var(--surface-line)' }}>
+                {srcRow('REM', fmtMin(sl.reduce((a, x) => a + (x.rem_min || 0), 0)), '#8B7CF6')}
+                {srcRow('Deep', fmtMin(sl.reduce((a, x) => a + (x.deep_min || 0), 0)), '#4C3FCF')}
+                {srcRow('Light', fmtMin(sl.reduce((a, x) => a + (x.light_min || 0), 0)), '#C4B5FD')}
+                {sl.some((x) => x.nap) && srcRow('Naps', String(sl.filter((x) => x.nap).length), 'var(--fg-3)')}
+              </div>
+            )}
+            <div style={{ fontSize: 11, color: 'var(--fg-3)', marginTop: 8, textAlign: 'center', lineHeight: 1.5 }}>
+              Synced from WHOOP {'·'} filed on the day you woke up. You can still add a note.
+            </div>
+          </div>
         ) : habit.type === 'binary' ? (
           <button onClick={() => setV(v ? 0 : 1)} style={{
             width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9,
@@ -741,7 +793,7 @@ function Editor({ habit, date, entry, breakdown, workouts, manualOn, autoGreen, 
 }
 
 /* Heatmap grid */
-function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCodingNote, whoopWorkouts, fitnessManual, whoop, onFitnessManual }) {
+function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCodingNote, whoopWorkouts, whoopSleep, fitnessManual, whoop, onFitnessManual }) {
   const [hover, setHover] = useState(null);
   const [sel, setSel] = useState(null);
   const scrollRef = useRef(null);
@@ -834,12 +886,14 @@ function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCod
       {hover && !sel && <Tooltip habit={habit} date={hover.date} entry={data[hover.key]}
         breakdown={codingDaily && codingDaily[hover.key]}
         workouts={whoopWorkouts && whoopWorkouts[hover.key]}
+        sleeps={whoopSleep && whoopSleep[hover.key]}
         manualOn={!!(fitnessManual && fitnessManual[hover.key])} whoop={whoop} rect={hover.rect} />}
       <AnimatePresence>
         {sel && (
           <Editor key="cell-editor" habit={habit} date={sel.date} entry={data[sel.key]}
             breakdown={codingDaily && codingDaily[sel.key]}
             workouts={whoopWorkouts && whoopWorkouts[sel.key]}
+            sleeps={whoopSleep && whoopSleep[sel.key]}
             manualOn={!!(fitnessManual && fitnessManual[sel.key])}
             autoGreen={whoopWorkouts ? whoopQualifies(whoopWorkouts[sel.key], whoop) : false}
             whoop={whoop}
@@ -1138,11 +1192,62 @@ function ColorPicker({ value, onChange }) {
   );
 }
 
+/* Does this connection carry the sleep scope? OAuth scopes are frozen at consent, so a
+   connection made before read:sleep existed can never read sleep — null means it predates
+   the column entirely, which is exactly that case. */
+function hasSleepScope(whoop) {
+  return !!(whoop && whoop.connected && (whoop.scopes || '').includes('read:sleep'));
+}
+
+/* Read-only WHOOP status inside a habit modal. Connecting and disconnecting live in
+   Settings now: one connection feeds several habits, so disconnecting from inside one
+   of them would silently break the others. */
+function WhoopStatus({ whoop, color, needsSleep }) {
+  const accent = peakColor(hueOf(color));
+  const connected = !!(whoop && whoop.connected);
+  const sleepBlocked = needsSleep && connected && !hasSleepScope(whoop);
+
+  const box = (border, children) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 12px', borderRadius: 10, background: 'var(--surface-1)', border }}>
+      <div style={{ minWidth: 0 }}>{children}</div>
+    </div>
+  );
+  const title = { fontSize: 13, fontWeight: 700, color: 'var(--fg-1)' };
+  const sub = { fontSize: 12, color: 'var(--fg-3)', marginTop: 2, lineHeight: 1.45 };
+
+  if (!connected) {
+    return box('1px dashed var(--surface-line-strong)', (
+      <>
+        <div style={title}>WHOOP {'—'} not connected</div>
+        <div style={sub}>Open {'⚙'} Settings {'→'} Connections to link WHOOP. You can save this habit now; it fills in once connected.</div>
+      </>
+    ));
+  }
+  if (sleepBlocked) {
+    return box('1px solid rgba(255,180,0,0.45)', (
+      <>
+        <div style={title}>WHOOP {'—'} sleep access needed</div>
+        <div style={sub}>This connection was made before sleep was supported. Re-authorize in {'⚙'} Settings {'→'} Connections to import your sleep.</div>
+      </>
+    ));
+  }
+  return box(`1px solid ${withAlpha(accent, 0.35)}`, (
+    <>
+      <div style={title}>WHOOP {'·'} connected</div>
+      <div style={sub}>
+        {whoop.whoop_name ? `${whoop.whoop_name} ${'·'} ` : ''}
+        {whoop.backfill_status === 'running'
+          ? `importing${'…'} ${whoop.backfill_progress}`
+          : (whoop.last_synced_at ? `synced ${relTime(whoop.last_synced_at)}` : 'not synced yet')}
+      </div>
+    </>
+  ));
+}
+
 /* Create / edit / delete a habit. Pure form — persistence handled by caller. */
 function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisconnectWhoop, onClose }) {
   const isEdit = !!initial;
   const startCoding = !!(initial && initial.source === 'coding');
-  const startFitness = !!(initial && initial.source === 'fitness');
   const [name, setName] = useState(initial ? initial.name : '');
   const [type, setType] = useState(initial ? initial.type : 'count');
   const [levels, setLevels] = useState(initial ? (initial.levels || 5) : 5);
@@ -1150,34 +1255,47 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
   const [icon, setIcon] = useState(initial ? initial.icon : 'target');
   const [color, setColor] = useState(initial ? (initial.color || '#16EC06') : '#16EC06');
   const [confirmDel, setConfirmDel] = useState(false);
-  // Coding sync: pull current usernames from the (single) coding profile when editing.
-  const [codingOn, setCodingOn] = useState(startCoding);
+  /* One source at a time. This was two booleans that silently cancelled each other;
+     a single value makes the exclusivity real instead of a convention, and the old
+     codingOn/fitnessOn are derived so every downstream conditional is unchanged. */
+  const startPreset = (initial && ['coding', 'fitness', 'sleep'].includes(initial.source)) ? initial.source : null;
+  const [preset, setPreset] = useState(startPreset);
+  const codingOn = preset === 'coding';
+  const fitnessOn = preset === 'fitness';
+  const sleepOn = preset === 'sleep';
   const [leetUser, setLeetUser] = useState((coding && coding.leetcode_username) || '');
   const [gfgUser, setGfgUser] = useState((coding && coding.gfg_username) || '');
-  // Fitness sync: one integration at a time, so coding and fitness are mutually exclusive.
-  const [fitnessOn, setFitnessOn] = useState(startFitness);
   const [minDur, setMinDur] = useState((whoop && whoop.min_duration_min) || 20);
   const [minStrain, setMinStrain] = useState((whoop && whoop.min_strain != null) ? Number(whoop.min_strain) : 6);
   const canSave = name.trim().length > 0 && (!codingOn || leetUser.trim() || gfgUser.trim());
 
-  const enableCoding = (v) => {
-    setCodingOn(v);
-    if (v) { setFitnessOn(false); setType('count'); if (!name.trim()) setName('Coding'); if (icon === 'target') setIcon('code'); if (color === '#16EC06') setColor('#0093E7'); }
-  };
-  const enableFitness = (v) => {
-    setFitnessOn(v);
-    if (v) { setCodingOn(false); setType('binary'); if (!name.trim()) setName('Workout'); if (icon === 'target') setIcon('dumbbell'); }
+  // Picking a source pre-fills the habit's shape; only defaults are overwritten, so a
+  // name/icon/colour the user already chose survives.
+  const choosePreset = (p) => {
+    const next = preset === p ? null : p;
+    setPreset(next);
+    if (next === 'coding') {
+      setType('count'); if (!name.trim()) setName('Coding');
+      if (icon === 'target') setIcon('code'); if (color === '#16EC06') setColor('#0093E7');
+    } else if (next === 'fitness') {
+      setType('binary'); if (!name.trim()) setName('Workout');
+      if (icon === 'target') setIcon('dumbbell');
+    } else if (next === 'sleep') {
+      setType('count'); setLevels(9); if (!name.trim()) setName('Sleep');
+      if (icon === 'target') setIcon('brain'); if (color === '#16EC06') setColor('#A855F7');
+    }
   };
 
   const submit = (opts) => {
     if (!canSave) return;
     const form = {
       name: name.trim(),
-      type: codingOn ? 'count' : (fitnessOn ? 'binary' : type),
-      levels: codingOn ? 5 : (fitnessOn ? 1 : (type === 'count' ? levels : 1)),
-      unit: codingOn ? 'solves' : (fitnessOn ? 'times' : (unit.trim() || 'times')),
+      type: codingOn ? 'count' : (fitnessOn ? 'binary' : (sleepOn ? 'count' : type)),
+      // Sleep is one shade per hour, so it wants the full 9 levels.
+      levels: codingOn ? 5 : (fitnessOn ? 1 : (sleepOn ? 9 : (type === 'count' ? levels : 1))),
+      unit: codingOn ? 'solves' : (fitnessOn ? 'times' : (sleepOn ? 'hours' : (unit.trim() || 'times'))),
       icon, color,
-      source: codingOn ? 'coding' : (fitnessOn ? 'fitness' : null),
+      source: preset,
       fitness_kind: fitnessOn ? 'workout' : null,
     };
     const codingPatch = codingOn
@@ -1206,17 +1324,39 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Reading" maxLength={40} style={field} autoFocus />
         </div>
 
-        {/* Advanced — connect this habit to an external data source. */}
+        {/* Pick a source and the habit fills itself in. These are mutually exclusive —
+            one card, not three switches that silently cancel each other. */}
         <div style={{ marginBottom: 16, padding: 14, borderRadius: 12, background: 'var(--surface-0)', border: '1px solid var(--surface-line)' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--fg-3)', marginBottom: 12 }}>Advanced</div>
-
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-1)' }}>Coding habit</div>
-              <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 3 }}>Auto-count unique problems solved each day.</div>
-            </div>
-            <Toggle on={codingOn} onChange={enableCoding} />
+          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>Track it automatically</div>
+          <div style={{ fontSize: 12, color: 'var(--fg-3)', margin: '5px 0 12px' }}>
+            {preset ? 'This habit fills itself in — tap again to log it yourself.' : 'Optional. Pick a source, or just log this habit yourself.'}
           </div>
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            {[
+              { key: 'coding', icon: 'code', label: 'Coding', sub: 'LeetCode · GFG' },
+              { key: 'fitness', icon: 'dumbbell', label: 'Workouts', sub: 'WHOOP' },
+              { key: 'sleep', icon: 'brain', label: 'Sleep', sub: 'WHOOP' },
+            ].map((p) => {
+              const on = preset === p.key;
+              const accent = peakColor(hueOf(color));
+              return (
+                <button key={p.key} onClick={() => choosePreset(p.key)} style={{
+                  flex: 1, minWidth: 0, padding: '11px 6px', borderRadius: 11, cursor: 'pointer',
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5,
+                  fontFamily: 'var(--font-sans)',
+                  background: on ? withAlpha(accent, 0.14) : 'transparent',
+                  border: on ? `1.5px solid ${accent}` : '1.5px solid var(--surface-line-strong)',
+                  color: on ? 'var(--fg-1)' : 'var(--fg-2)',
+                }}>
+                  <Icon name={p.icon} size={17} />
+                  <span style={{ fontSize: 12, fontWeight: 700 }}>{p.label}</span>
+                  <span style={{ fontSize: 10, color: 'var(--fg-3)', whiteSpace: 'nowrap' }}>{p.sub}</span>
+                </button>
+              );
+            })}
+          </div>
+
           {codingOn && (
             <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
               <div>
@@ -1235,50 +1375,21 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
             </div>
           )}
 
-          <div style={{ height: 1, background: 'var(--surface-line)', margin: '14px 0' }} />
-
-          {/* Fitness — a workout day comes from a connected wearable. */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-1)' }}>Fitness habit</div>
-              <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 3 }}>Mark a day done when you work out.</div>
+          {sleepOn && (
+            <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <WhoopStatus whoop={whoop} color={color} needsSleep />
+              <div style={{ fontSize: 12, color: 'var(--fg-3)', lineHeight: 1.5 }}>
+                Each day is shaded by <b>hours slept</b>, one shade per hour up to 9. A night
+                is filed on the day you <b>wake up</b>, so a late bedtime still counts for the
+                right morning. Naps are included. Your last 12 months are imported on connect,
+                then refreshed nightly.
+              </div>
             </div>
-            <Toggle on={fitnessOn} onChange={enableFitness} />
-          </div>
+          )}
+
           {fitnessOn && (
             <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <label style={lbl}>Connect a source</label>
-
-              {whoop && whoop.connected ? (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '11px 12px', borderRadius: 10, background: 'var(--surface-1)', border: `1px solid ${withAlpha(peakColor(hueOf(color)), 0.35)}` }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-1)' }}>WHOOP {'·'} connected</div>
-                    <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 2 }}>
-                      {whoop.whoop_name ? `${whoop.whoop_name} ${'·'} ` : ''}
-                      {whoop.backfill_status === 'running'
-                        ? `importing${'…'} ${whoop.backfill_progress} workouts`
-                        : (whoop.last_synced_at ? `synced ${relTime(whoop.last_synced_at)}` : 'not synced yet')}
-                    </div>
-                  </div>
-                  <button onClick={onDisconnectWhoop} className="auth-ghost-btn" style={{ flex: 'none', fontSize: 12, padding: '7px 12px', borderRadius: 999, cursor: 'pointer', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', color: 'var(--fg-2)' }}>Disconnect</button>
-                </div>
-              ) : (
-                /* Save the habit BEFORE leaving for WHOOP's consent screen. Navigating away
-                   with the form unsaved leaves habits.source null, and the recompute trigger
-                   then no-ops on every backfilled workout — the whole year lands in the DB
-                   but never reaches the heatmap. */
-                <button onClick={() => { if (canSave) submit({ thenConnect: true }); }} disabled={!canSave}
-                  style={{ width: '100%', padding: '12px', borderRadius: 10, cursor: canSave ? 'pointer' : 'default', fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 13, background: canSave ? 'var(--surface-3)' : 'var(--surface-1)', border: canSave ? '1.5px solid var(--teal)' : '1.5px solid var(--surface-line-strong)', color: canSave ? '#fff' : 'var(--fg-disabled)' }}>Connect WHOOP</button>
-              )}
-
-              {/* Apple Health keeps data on-device with no cloud API, so a web app
-                  cannot read it. Say so rather than shipping a dead button. */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '11px 12px', borderRadius: 10, background: 'var(--surface-0)', border: '1px dashed var(--surface-line)', opacity: 0.6 }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-2)' }}>Apple Health</div>
-                  <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 2 }}>Not available {'—'} Apple Health data never leaves your phone.</div>
-                </div>
-              </div>
+              <WhoopStatus whoop={whoop} color={color} />
 
               <div>
                 <label style={lbl}>Minimum duration {'—'} {minDur} min</label>
@@ -1296,7 +1407,7 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
           )}
         </div>
 
-        {!codingOn && !fitnessOn && (
+        {!preset && (
         <div style={{ marginBottom: 16 }}>
           <label style={lbl}>Type</label>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -1315,11 +1426,11 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
         </div>
         )}
 
-        {type === 'count' && !codingOn && !fitnessOn && (
+        {type === 'count' && !preset && (
           <div style={{ marginBottom: 16 }}>
             <label style={lbl}>Levels — {levels}</label>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <input type="range" min={2} max={7} value={levels} onChange={(e) => setLevels(Number(e.target.value))} style={{ flex: 1, accentColor: '#00F19F' }} />
+              <input type="range" min={2} max={9} value={levels} onChange={(e) => setLevels(Number(e.target.value))} style={{ flex: 1, accentColor: '#00F19F' }} />
               <div style={{ display: 'flex', gap: 3 }}>
                 {previewScale.map((c, i) => <span key={i} style={{ width: 14, height: 14, borderRadius: 3, background: c, outline: '1px solid rgba(255,255,255,0.045)', outlineOffset: -1 }} />)}
               </div>
@@ -1333,7 +1444,7 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
           <ColorPicker value={color} onChange={setColor} />
         </div>
 
-        {!codingOn && (
+        {!preset && (
         <div style={{ marginBottom: 16 }}>
           <label style={lbl}>Unit label</label>
           <input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder={type === 'binary' ? 'e.g. days' : 'e.g. pages, questions'} maxLength={24} style={field} />
@@ -1385,7 +1496,7 @@ function Toggle({ on, onChange }) {
 }
 
 /* App settings panel — header text + primary accent color */
-function SettingsModal({ settings, email, onSave, onSignOut, onClose }) {
+function SettingsModal({ settings, email, whoop, whoopHabits = [], onConnectWhoop, onDisconnectWhoop, onSave, onSignOut, onClose }) {
   const [headerText, setHeaderText] = useState(settings.header_text || 'DHIMANT');
   const [primary, setPrimary] = useState(settings.primary_color || '#00F19F');
   const lbl = { fontSize: 11, fontWeight: 700, letterSpacing: '.12em', textTransform: 'uppercase', color: 'var(--fg-3)', display: 'block', marginBottom: 8 };
@@ -1414,6 +1525,52 @@ function SettingsModal({ settings, email, onSave, onSignOut, onClose }) {
           <label style={lbl}>Primary color</label>
           <ColorPicker value={primary} onChange={setPrimary} />
           <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 7 }}>The app's accent — streak, “Synced”, active tab, selected day, sliders.</div>
+        </div>
+
+        {/* Connections — account-level, shared by every habit that uses them. Lives here
+            rather than in a habit modal because disconnecting affects all of them. */}
+        <div style={{ borderTop: '1px solid var(--surface-line)', margin: '4px 0 16px' }} />
+        <div style={{ marginBottom: 18 }}>
+          <label style={lbl}>Connections</label>
+
+          <div style={{ padding: '12px', borderRadius: 11, background: 'var(--surface-0)', border: '1px solid var(--surface-line)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-1)' }}>WHOOP</div>
+                <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 2 }}>
+                  {whoop && whoop.connected
+                    ? `${whoop.whoop_name ? whoop.whoop_name + ' · ' : ''}${whoop.last_synced_at ? 'synced ' + relTime(whoop.last_synced_at) : 'not synced yet'}`
+                    : 'Not connected'}
+                </div>
+                {whoopHabits.length > 0 && whoop && whoop.connected && (
+                  <div style={{ fontSize: 11, color: 'var(--fg-3)', marginTop: 4 }}>Used by {whoopHabits.join(', ')}</div>
+                )}
+              </div>
+              {whoop && whoop.connected ? (
+                <button onClick={onDisconnectWhoop} style={{ flex: 'none', fontSize: 12, padding: '8px 12px', borderRadius: 999, cursor: 'pointer', background: 'transparent', border: '1px solid var(--surface-line-strong)', color: 'var(--recovery-low)', fontFamily: 'var(--font-sans)', fontWeight: 700 }}>Disconnect</button>
+              ) : (
+                <button onClick={onConnectWhoop} style={{ flex: 'none', fontSize: 12, padding: '8px 14px', borderRadius: 999, cursor: 'pointer', background: 'var(--surface-3)', border: '1.5px solid var(--teal)', color: '#fff', fontFamily: 'var(--font-sans)', fontWeight: 700 }}>Connect</button>
+              )}
+            </div>
+
+            {/* A connection predating read:sleep can never read sleep — only a fresh
+                consent can widen the grant. */}
+            {whoop && whoop.connected && !hasSleepScope(whoop) && (
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--surface-line)', display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ flex: 1, fontSize: 12, color: 'var(--fg-3)', lineHeight: 1.45 }}>
+                  Sleep access not granted {'—'} this connection predates sleep support. Workouts are unaffected.
+                </div>
+                <button onClick={onConnectWhoop} style={{ flex: 'none', fontSize: 12, padding: '8px 12px', borderRadius: 999, cursor: 'pointer', background: 'transparent', border: '1px solid rgba(255,180,0,0.5)', color: '#FFC400', fontFamily: 'var(--font-sans)', fontWeight: 700, whiteSpace: 'nowrap' }}>Re-authorize</button>
+              </div>
+            )}
+          </div>
+
+          {/* Apple Health keeps data on-device with no cloud API, so a web app cannot
+              read it. Say so rather than shipping a dead button. */}
+          <div style={{ marginTop: 8, padding: '11px 12px', borderRadius: 11, background: 'var(--surface-0)', border: '1px dashed var(--surface-line)', opacity: 0.6 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-2)' }}>Apple Health</div>
+            <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 2 }}>Not available {'—'} Apple Health data never leaves your phone.</div>
+          </div>
         </div>
 
         <div style={{ borderTop: '1px solid var(--surface-line)', margin: '4px 0 16px' }} />
@@ -1473,6 +1630,7 @@ function App({ userId, email }) {
   const [whoop, setWhoop] = useState(DEFAULT_WHOOP);
   const [fitnessManual, setFitnessManual] = useState({}); // { 'YYYY-MM-DD': true }
   const [whoopWorkouts, setWhoopWorkouts] = useState({}); // { 'YYYY-MM-DD': [ {...} ] }
+  const [whoopSleep, setWhoopSleep] = useState({});          // { 'YYYY-MM-DD': [ {...} ] }
 
   const habit = habits.find((h) => h.id === activeId) || null;
   const data = habit ? (store[habit.id] || {}) : {};
@@ -1487,6 +1645,7 @@ function App({ userId, email }) {
         if (!mounted) return;
         setHabits(hs); setStore(s); setSettings(st); setCoding(cp); setCodingDaily(cd);
         setWhoop(wc); setFitnessManual(fm); setWhoopWorkouts(ww);
+        fetchWhoopSleep().then(setWhoopSleep);
         applyPrimaryColor(st.primary_color); setSynced(true);
       });
     const eChannel = sb.channel('habit_entries_rt')
@@ -1515,7 +1674,8 @@ function App({ userId, email }) {
       .subscribe();
     const wwChannel = sb.channel('whoop_workouts_rt')
       .on('postgres_changes', { event: '*', schema: 'public', table: WHOOP_WORKOUTS_TABLE },
-        () => { fetchWhoopWorkouts().then((w) => { if (mounted) setWhoopWorkouts(w); }); })
+        () => { fetchWhoopWorkouts().then((w) => { if (mounted) setWhoopWorkouts(w); });
+                fetchWhoopSleep().then((sl) => { if (mounted) setWhoopSleep(sl); }); })
       .subscribe();
     const fmChannel = sb.channel('fitness_manual_rt')
       .on('postgres_changes', { event: '*', schema: 'public', table: FITNESS_MANUAL_TABLE },
@@ -1541,6 +1701,7 @@ function App({ userId, email }) {
         Promise.all([fetchStore(), fetchWhoopConnection(), fetchWhoopWorkouts(), fetchFitnessManual()])
           .then(([s, wc, ww, fm]) => {
             setStore(s); setWhoop(wc); setWhoopWorkouts(ww); setFitnessManual(fm); setSyncing(false);
+          fetchWhoopSleep().then(setWhoopSleep);
           });
       });
     } else if (w === 'error') {
@@ -1590,6 +1751,7 @@ function App({ userId, email }) {
       Promise.all([fetchStore(), fetchWhoopConnection(), fetchWhoopWorkouts(), fetchFitnessManual()])
         .then(([s, wc, ww, fm]) => {
           setStore(s); setWhoop(wc); setWhoopWorkouts(ww); setFitnessManual(fm); setSyncing(false);
+          fetchWhoopSleep().then(setWhoopSleep);
         });
     });
   };
@@ -1678,6 +1840,7 @@ function App({ userId, email }) {
       // Coding and fitness habits use deterministic ids so they pair 1:1 with their profile row.
       const id = form.source === 'coding' ? `coding-${userId}`
                : form.source === 'fitness' ? `fitness-${userId}`
+               : form.source === 'sleep' ? `sleep-${userId}`
                : slugify(form.name);
       const sort_order = habits.length ? Math.max(...habits.map((h) => h.sort_order)) + 1 : 0;
       setHabits((prev) => [...prev.filter((h) => h.id !== id), rowToHabit({ id, ...form, sort_order })]);
@@ -1696,6 +1859,14 @@ function App({ userId, email }) {
         repairFitnessDays().then(() => {
           Promise.all([fetchStore(), fetchWhoopConnection(), fetchFitnessManual()])
             .then(([s, wc, fm]) => { setStore(s); setWhoop(wc); setFitnessManual(fm); });
+        });
+      }
+      if (form.source === 'sleep') {
+        // Same for sleep: rows may already be stored from an earlier sync, and the
+        // trigger no-ops until a sleep habit exists to write them into.
+        repairSleepDays().then(() => {
+          Promise.all([fetchStore(), fetchWhoopConnection()])
+            .then(([s, wc]) => { setStore(s); setWhoop(wc); });
         });
       }
     });
@@ -1792,7 +1963,7 @@ function App({ userId, email }) {
                 </motion.span>
               </button>
             )}
-            {habit.source === 'fitness' && whoop.connected && (
+            {(habit.source === 'fitness' || habit.source === 'sleep') && whoop.connected && (
               <button onClick={refreshWhoop} disabled={syncing} title={syncing ? 'Syncing…' : 'Refresh from WHOOP'}
                 className="auth-ghost-btn" style={{ width: 38, height: 38, borderRadius: 999, flex: 'none', cursor: syncing ? 'default' : 'pointer', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)', color: syncing ? 'var(--teal)' : 'var(--fg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <motion.span style={{ display: 'flex' }} animate={syncing ? { rotate: 360 } : { rotate: 0 }} transition={syncing ? { repeat: Infinity, duration: 0.9, ease: 'linear' } : { duration: 0 }}>
@@ -1800,7 +1971,7 @@ function App({ userId, email }) {
                 </motion.span>
               </button>
             )}
-            {habit.source === 'fitness' && !whoop.connected && (
+            {(habit.source === 'fitness' || habit.source === 'sleep') && !whoop.connected && (
               <button onClick={startWhoopConnect} title="Reconnect WHOOP"
                 className="auth-ghost-btn" style={{ flex: 'none', fontSize: 12, fontWeight: 700, padding: '8px 13px', borderRadius: 999, cursor: 'pointer', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)', color: 'var(--fg-2)' }}>
                 Reconnect WHOOP
@@ -1819,11 +1990,14 @@ function App({ userId, email }) {
         <Heatmap habit={habit} data={data} weeks={displayWeeks} onSet={onSet}
           codingDaily={habit.source === 'coding' ? codingDaily : null} onCodingManual={onCodingManual} onCodingNote={onCodingNote}
           whoopWorkouts={habit.source === 'fitness' ? whoopWorkouts : null}
+          whoopSleep={habit.source === 'sleep' ? whoopSleep : null}
           fitnessManual={habit.source === 'fitness' ? fitnessManual : null}
           whoop={whoop} onFitnessManual={onFitnessManual} />
         <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 14, display: 'flex', alignItems: 'center', gap: 7 }}>
           <Icon name="pencil" size={13} color="var(--fg-3)" />
-          <span>Click any day to log {habit.name} and add a note {'\u00b7'} hover to review</span>
+          <span>{habit.source === 'sleep'
+            ? `${habit.name} syncs from WHOOP \u00b7 click a day for the full breakdown`
+            : `Click any day to log ${habit.name} and add a note \u00b7 hover to review`}</span>
         </div>
       </Card>
 
@@ -1856,7 +2030,11 @@ function App({ userId, email }) {
           <HabitModal key="habit-modal" initial={modal.habit} coding={coding} whoop={whoop} syncing={syncing} onSave={saveHabit} onDelete={removeHabit} onDisconnectWhoop={onDisconnectWhoop} onClose={() => setModal(null)} />
         )}
         {settingsOpen && (
-          <SettingsModal key="settings-modal" settings={settings} email={email} onSave={saveAppSettings} onSignOut={() => sb.auth.signOut()} onClose={cancelSettings} />
+          <SettingsModal key="settings-modal" settings={settings} email={email}
+            whoop={whoop}
+            whoopHabits={habits.filter((h) => h.source === 'fitness' || h.source === 'sleep').map((h) => h.name)}
+            onConnectWhoop={startWhoopConnect} onDisconnectWhoop={onDisconnectWhoop}
+            onSave={saveAppSettings} onSignOut={() => sb.auth.signOut()} onClose={cancelSettings} />
         )}
       </AnimatePresence>
     </motion.div>

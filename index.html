@@ -673,6 +673,7 @@
   const WHOOP_TABLE = 'whoop_connections';
   const FITNESS_MANUAL_TABLE = 'fitness_manual';
   const WHOOP_WORKOUTS_TABLE = 'whoop_workouts';
+  const WHOOP_SLEEP_TABLE = 'whoop_sleep';
   const DEFAULT_WHOOP = {
     connected: false,
     whoop_name: null,
@@ -711,7 +712,7 @@
     const {
       data,
       error
-    } = await sb.from(WHOOP_TABLE).select('connected, whoop_name, min_duration_min, min_strain, excluded_sports, last_synced_at, last_sync_status, backfill_status, backfill_progress').maybeSingle();
+    } = await sb.from(WHOOP_TABLE).select('connected, whoop_name, scopes, min_duration_min, min_strain, excluded_sports, last_synced_at, last_sync_status, backfill_status, backfill_progress').maybeSingle();
     if (error) {
       console.error('WHOOP fetch failed:', error.message);
       return {
@@ -798,6 +799,20 @@
     }
     return data || 0;
   }
+
+  /* Same for sleep — recompute_sleep_day returns early when no source='sleep' habit
+     exists yet, so rows synced before the habit was created need this one-shot pass. */
+  async function repairSleepDays() {
+    const {
+      data,
+      error
+    } = await sb.rpc('recompute_my_sleep_days');
+    if (error) {
+      console.error('Sleep repair failed:', error.message);
+      return 0;
+    }
+    return data || 0;
+  }
   async function triggerWhoopSync(mode) {
     try {
       const {
@@ -856,6 +871,30 @@
   }
 
   /* Per-day workout detail for the tooltip + day editor: { 'YYYY-MM-DD': [ {...} ] }. */
+  /* "7h 45m" — the heatmap shade is whole hours, so exact minutes only show here. */
+  const fmtMin = m => {
+    const t = Math.round(m || 0);
+    return t >= 60 ? `${Math.floor(t / 60)}h ${String(t % 60).padStart(2, '0')}m` : `${t}m`;
+  };
+  const fmtSleep = rows => rows && rows.length ? fmtMin(rows.reduce((a, x) => a + (x.total_sleep_min || 0), 0)) : '—';
+
+  /* Raw sleep records per wake-day, for the day editor's read-only breakdown. The
+     heatmap value is rounded to whole hours, so the exact minutes only live here. */
+  async function fetchWhoopSleep() {
+    const out = {};
+    const {
+      data,
+      error
+    } = await sb.from(WHOOP_SLEEP_TABLE).select('day, nap, total_sleep_min, rem_min, deep_min, light_min, efficiency_pct').order('start_at');
+    if (error) {
+      console.error('WHOOP sleep fetch failed:', error.message);
+      return out;
+    }
+    (data || []).forEach(r => {
+      (out[r.day] = out[r.day] || []).push(r);
+    });
+    return out;
+  }
   async function fetchWhoopWorkouts() {
     const out = {};
     const {
@@ -1025,6 +1064,7 @@
     entry,
     breakdown,
     workouts,
+    sleeps,
     manualOn,
     whoop,
     rect
@@ -1223,6 +1263,7 @@
     entry,
     breakdown,
     workouts,
+    sleeps,
     manualOn,
     autoGreen,
     whoop,
@@ -1242,7 +1283,9 @@
     }, [onClose]);
     const isCoding = habit.source === 'coding';
     const isFitness = habit.source === 'fitness';
+    const isSleep = habit.source === 'sleep';
     const wk = workouts || [];
+    const sl = sleeps || [];
     // Coding habit: total = leetcode + gfg + manual; the +/- adjusts only manual.
     const bd = breakdown || {
       leetcode: 0,
@@ -1261,7 +1304,7 @@
       v: Math.min(maxV, Math.max(0, nv)),
       note
     });
-    const setNote = nn => isCoding || isFitness ? onNote(key, nn) : onChange({
+    const setNote = nn => isCoding || isFitness || isSleep ? onNote(key, nn) : onChange({
       v,
       note: nn
     });
@@ -1549,7 +1592,52 @@
         textAlign: 'center',
         lineHeight: 1.5
       }
-    }, autoGreen ? 'WHOOP already counts this day — your mark is optional.' : 'WHOOP syncs automatically; mark a day yourself when it missed one.')) : habit.type === 'binary' ? /*#__PURE__*/React.createElement("button", {
+    }, autoGreen ? 'WHOOP already counts this day — your mark is optional.' : 'WHOOP syncs automatically; mark a day yourself when it missed one.')) : isSleep ?
+    /*#__PURE__*/
+    /* Read-only: WHOOP owns this value. A hand-edit here would be silently
+       reverted by the next sync, so the editor reports instead of inviting one. */
+    React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        textAlign: 'center'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "whoop-num",
+      style: {
+        fontSize: 52,
+        lineHeight: 1,
+        color: v ? cellColor(habit, {
+          v
+        }) : 'var(--fg-3)'
+      }
+    }, fmtSleep(sl)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: '.14em',
+        textTransform: 'uppercase',
+        color: 'var(--fg-3)',
+        marginTop: 4
+      }
+    }, sl.length ? `counts as ${v} ${v === 1 ? 'hour' : 'hours'}` : 'no sleep recorded')), sl.length > 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 14,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 9,
+        padding: '13px 14px',
+        borderRadius: 12,
+        background: 'var(--surface-0)',
+        border: '1px solid var(--surface-line)'
+      }
+    }, srcRow('REM', fmtMin(sl.reduce((a, x) => a + (x.rem_min || 0), 0)), '#8B7CF6'), srcRow('Deep', fmtMin(sl.reduce((a, x) => a + (x.deep_min || 0), 0)), '#4C3FCF'), srcRow('Light', fmtMin(sl.reduce((a, x) => a + (x.light_min || 0), 0)), '#C4B5FD'), sl.some(x => x.nap) && srcRow('Naps', String(sl.filter(x => x.nap).length), 'var(--fg-3)')), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--fg-3)',
+        marginTop: 8,
+        textAlign: 'center',
+        lineHeight: 1.5
+      }
+    }, "Synced from WHOOP ", '·', " filed on the day you woke up. You can still add a note.")) : habit.type === 'binary' ? /*#__PURE__*/React.createElement("button", {
       onClick: () => setV(v ? 0 : 1),
       style: {
         width: '100%',
@@ -1650,6 +1738,7 @@
     onCodingManual,
     onCodingNote,
     whoopWorkouts,
+    whoopSleep,
     fitnessManual,
     whoop,
     onFitnessManual
@@ -1837,6 +1926,7 @@
       entry: data[hover.key],
       breakdown: codingDaily && codingDaily[hover.key],
       workouts: whoopWorkouts && whoopWorkouts[hover.key],
+      sleeps: whoopSleep && whoopSleep[hover.key],
       manualOn: !!(fitnessManual && fitnessManual[hover.key]),
       whoop: whoop,
       rect: hover.rect
@@ -1847,6 +1937,7 @@
       entry: data[sel.key],
       breakdown: codingDaily && codingDaily[sel.key],
       workouts: whoopWorkouts && whoopWorkouts[sel.key],
+      sleeps: whoopSleep && whoopSleep[sel.key],
       manualOn: !!(fitnessManual && fitnessManual[sel.key]),
       autoGreen: whoopWorkouts ? whoopQualifies(whoopWorkouts[sel.key], whoop) : false,
       whoop: whoop,
@@ -2571,6 +2662,71 @@
     }));
   }
 
+  /* Does this connection carry the sleep scope? OAuth scopes are frozen at consent, so a
+     connection made before read:sleep existed can never read sleep — null means it predates
+     the column entirely, which is exactly that case. */
+  function hasSleepScope(whoop) {
+    return !!(whoop && whoop.connected && (whoop.scopes || '').includes('read:sleep'));
+  }
+
+  /* Read-only WHOOP status inside a habit modal. Connecting and disconnecting live in
+     Settings now: one connection feeds several habits, so disconnecting from inside one
+     of them would silently break the others. */
+  function WhoopStatus({
+    whoop,
+    color,
+    needsSleep
+  }) {
+    const accent = peakColor(hueOf(color));
+    const connected = !!(whoop && whoop.connected);
+    const sleepBlocked = needsSleep && connected && !hasSleepScope(whoop);
+    const box = (border, children) => /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '11px 12px',
+        borderRadius: 10,
+        background: 'var(--surface-1)',
+        border
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        minWidth: 0
+      }
+    }, children));
+    const title = {
+      fontSize: 13,
+      fontWeight: 700,
+      color: 'var(--fg-1)'
+    };
+    const sub = {
+      fontSize: 12,
+      color: 'var(--fg-3)',
+      marginTop: 2,
+      lineHeight: 1.45
+    };
+    if (!connected) {
+      return box('1px dashed var(--surface-line-strong)', /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+        style: title
+      }, "WHOOP ", '—', " not connected"), /*#__PURE__*/React.createElement("div", {
+        style: sub
+      }, "Open ", '⚙', " Settings ", '→', " Connections to link WHOOP. You can save this habit now; it fills in once connected.")));
+    }
+    if (sleepBlocked) {
+      return box('1px solid rgba(255,180,0,0.45)', /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+        style: title
+      }, "WHOOP ", '—', " sleep access needed"), /*#__PURE__*/React.createElement("div", {
+        style: sub
+      }, "This connection was made before sleep was supported. Re-authorize in ", '⚙', " Settings ", '→', " Connections to import your sleep.")));
+    }
+    return box(`1px solid ${withAlpha(accent, 0.35)}`, /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      style: title
+    }, "WHOOP ", '·', " connected"), /*#__PURE__*/React.createElement("div", {
+      style: sub
+    }, whoop.whoop_name ? `${whoop.whoop_name} ${'·'} ` : '', whoop.backfill_status === 'running' ? `importing${'…'} ${whoop.backfill_progress}` : whoop.last_synced_at ? `synced ${relTime(whoop.last_synced_at)}` : 'not synced yet')));
+  }
+
   /* Create / edit / delete a habit. Pure form — persistence handled by caller. */
   function HabitModal({
     initial,
@@ -2584,7 +2740,6 @@
   }) {
     const isEdit = !!initial;
     const startCoding = !!(initial && initial.source === 'coding');
-    const startFitness = !!(initial && initial.source === 'fitness');
     const [name, setName] = useState(initial ? initial.name : '');
     const [type, setType] = useState(initial ? initial.type : 'count');
     const [levels, setLevels] = useState(initial ? initial.levels || 5 : 5);
@@ -2592,44 +2747,53 @@
     const [icon, setIcon] = useState(initial ? initial.icon : 'target');
     const [color, setColor] = useState(initial ? initial.color || '#16EC06' : '#16EC06');
     const [confirmDel, setConfirmDel] = useState(false);
-    // Coding sync: pull current usernames from the (single) coding profile when editing.
-    const [codingOn, setCodingOn] = useState(startCoding);
+    /* One source at a time. This was two booleans that silently cancelled each other;
+       a single value makes the exclusivity real instead of a convention, and the old
+       codingOn/fitnessOn are derived so every downstream conditional is unchanged. */
+    const startPreset = initial && ['coding', 'fitness', 'sleep'].includes(initial.source) ? initial.source : null;
+    const [preset, setPreset] = useState(startPreset);
+    const codingOn = preset === 'coding';
+    const fitnessOn = preset === 'fitness';
+    const sleepOn = preset === 'sleep';
     const [leetUser, setLeetUser] = useState(coding && coding.leetcode_username || '');
     const [gfgUser, setGfgUser] = useState(coding && coding.gfg_username || '');
-    // Fitness sync: one integration at a time, so coding and fitness are mutually exclusive.
-    const [fitnessOn, setFitnessOn] = useState(startFitness);
     const [minDur, setMinDur] = useState(whoop && whoop.min_duration_min || 20);
     const [minStrain, setMinStrain] = useState(whoop && whoop.min_strain != null ? Number(whoop.min_strain) : 6);
     const canSave = name.trim().length > 0 && (!codingOn || leetUser.trim() || gfgUser.trim());
-    const enableCoding = v => {
-      setCodingOn(v);
-      if (v) {
-        setFitnessOn(false);
+
+    // Picking a source pre-fills the habit's shape; only defaults are overwritten, so a
+    // name/icon/colour the user already chose survives.
+    const choosePreset = p => {
+      const next = preset === p ? null : p;
+      setPreset(next);
+      if (next === 'coding') {
         setType('count');
         if (!name.trim()) setName('Coding');
         if (icon === 'target') setIcon('code');
         if (color === '#16EC06') setColor('#0093E7');
-      }
-    };
-    const enableFitness = v => {
-      setFitnessOn(v);
-      if (v) {
-        setCodingOn(false);
+      } else if (next === 'fitness') {
         setType('binary');
         if (!name.trim()) setName('Workout');
         if (icon === 'target') setIcon('dumbbell');
+      } else if (next === 'sleep') {
+        setType('count');
+        setLevels(9);
+        if (!name.trim()) setName('Sleep');
+        if (icon === 'target') setIcon('brain');
+        if (color === '#16EC06') setColor('#A855F7');
       }
     };
     const submit = opts => {
       if (!canSave) return;
       const form = {
         name: name.trim(),
-        type: codingOn ? 'count' : fitnessOn ? 'binary' : type,
-        levels: codingOn ? 5 : fitnessOn ? 1 : type === 'count' ? levels : 1,
-        unit: codingOn ? 'solves' : fitnessOn ? 'times' : unit.trim() || 'times',
+        type: codingOn ? 'count' : fitnessOn ? 'binary' : sleepOn ? 'count' : type,
+        // Sleep is one shade per hour, so it wants the full 9 levels.
+        levels: codingOn ? 5 : fitnessOn ? 1 : sleepOn ? 9 : type === 'count' ? levels : 1,
+        unit: codingOn ? 'solves' : fitnessOn ? 'times' : sleepOn ? 'hours' : unit.trim() || 'times',
         icon,
         color,
-        source: codingOn ? 'coding' : fitnessOn ? 'fitness' : null,
+        source: preset,
         fitness_kind: fitnessOn ? 'workout' : null
       };
       const codingPatch = codingOn ? {
@@ -2776,31 +2940,70 @@
         fontWeight: 700,
         letterSpacing: '.12em',
         textTransform: 'uppercase',
-        color: 'var(--fg-3)',
-        marginBottom: 12
+        color: 'var(--fg-3)'
       }
-    }, "Advanced"), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 12
-      }
-    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 700,
-        color: 'var(--fg-1)'
-      }
-    }, "Coding habit"), /*#__PURE__*/React.createElement("div", {
+    }, "Track it automatically"), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 12,
         color: 'var(--fg-3)',
-        marginTop: 3
+        margin: '5px 0 12px'
       }
-    }, "Auto-count unique problems solved each day.")), /*#__PURE__*/React.createElement(Toggle, {
-      on: codingOn,
-      onChange: enableCoding
+    }, preset ? 'This habit fills itself in — tap again to log it yourself.' : 'Optional. Pick a source, or just log this habit yourself.'), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        gap: 8
+      }
+    }, [{
+      key: 'coding',
+      icon: 'code',
+      label: 'Coding',
+      sub: 'LeetCode · GFG'
+    }, {
+      key: 'fitness',
+      icon: 'dumbbell',
+      label: 'Workouts',
+      sub: 'WHOOP'
+    }, {
+      key: 'sleep',
+      icon: 'brain',
+      label: 'Sleep',
+      sub: 'WHOOP'
+    }].map(p => {
+      const on = preset === p.key;
+      const accent = peakColor(hueOf(color));
+      return /*#__PURE__*/React.createElement("button", {
+        key: p.key,
+        onClick: () => choosePreset(p.key),
+        style: {
+          flex: 1,
+          minWidth: 0,
+          padding: '11px 6px',
+          borderRadius: 11,
+          cursor: 'pointer',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 5,
+          fontFamily: 'var(--font-sans)',
+          background: on ? withAlpha(accent, 0.14) : 'transparent',
+          border: on ? `1.5px solid ${accent}` : '1.5px solid var(--surface-line-strong)',
+          color: on ? 'var(--fg-1)' : 'var(--fg-2)'
+        }
+      }, /*#__PURE__*/React.createElement(Icon, {
+        name: p.icon,
+        size: 17
+      }), /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 12,
+          fontWeight: 700
+        }
+      }, p.label), /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 10,
+          color: 'var(--fg-3)',
+          whiteSpace: 'nowrap'
+        }
+      }, p.sub));
     })), codingOn && /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 14,
@@ -2845,133 +3048,34 @@
         color: 'var(--teal)',
         fontWeight: 600
       }
-    }, "Syncing\u2026"))), /*#__PURE__*/React.createElement("div", {
-      style: {
-        height: 1,
-        background: 'var(--surface-line)',
-        margin: '14px 0'
-      }
-    }), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 12
-      }
-    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 700,
-        color: 'var(--fg-1)'
-      }
-    }, "Fitness habit"), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12,
-        color: 'var(--fg-3)',
-        marginTop: 3
-      }
-    }, "Mark a day done when you work out.")), /*#__PURE__*/React.createElement(Toggle, {
-      on: fitnessOn,
-      onChange: enableFitness
-    })), fitnessOn && /*#__PURE__*/React.createElement("div", {
+    }, "Syncing\u2026"))), sleepOn && /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 14,
         display: 'flex',
         flexDirection: 'column',
         gap: 12
       }
-    }, /*#__PURE__*/React.createElement("label", {
-      style: lbl
-    }, "Connect a source"), whoop && whoop.connected ? /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 10,
-        padding: '11px 12px',
-        borderRadius: 10,
-        background: 'var(--surface-1)',
-        border: `1px solid ${withAlpha(peakColor(hueOf(color)), 0.35)}`
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        minWidth: 0
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 700,
-        color: 'var(--fg-1)'
-      }
-    }, "WHOOP ", '·', " connected"), /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement(WhoopStatus, {
+      whoop: whoop,
+      color: color,
+      needsSleep: true
+    }), /*#__PURE__*/React.createElement("div", {
       style: {
         fontSize: 12,
         color: 'var(--fg-3)',
-        marginTop: 2
+        lineHeight: 1.5
       }
-    }, whoop.whoop_name ? `${whoop.whoop_name} ${'·'} ` : '', whoop.backfill_status === 'running' ? `importing${'…'} ${whoop.backfill_progress} workouts` : whoop.last_synced_at ? `synced ${relTime(whoop.last_synced_at)}` : 'not synced yet')), /*#__PURE__*/React.createElement("button", {
-      onClick: onDisconnectWhoop,
-      className: "auth-ghost-btn",
+    }, "Each day is shaded by ", /*#__PURE__*/React.createElement("b", null, "hours slept"), ", one shade per hour up to 9. A night is filed on the day you ", /*#__PURE__*/React.createElement("b", null, "wake up"), ", so a late bedtime still counts for the right morning. Naps are included. Your last 12 months are imported on connect, then refreshed nightly.")), fitnessOn && /*#__PURE__*/React.createElement("div", {
       style: {
-        flex: 'none',
-        fontSize: 12,
-        padding: '7px 12px',
-        borderRadius: 999,
-        cursor: 'pointer',
-        background: 'rgba(255,255,255,0.04)',
-        border: '1px solid rgba(255,255,255,0.09)',
-        color: 'var(--fg-2)'
-      }
-    }, "Disconnect")) :
-    /*#__PURE__*/
-    /* Save the habit BEFORE leaving for WHOOP's consent screen. Navigating away
-       with the form unsaved leaves habits.source null, and the recompute trigger
-       then no-ops on every backfilled workout — the whole year lands in the DB
-       but never reaches the heatmap. */
-    React.createElement("button", {
-      onClick: () => {
-        if (canSave) submit({
-          thenConnect: true
-        });
-      },
-      disabled: !canSave,
-      style: {
-        width: '100%',
-        padding: '12px',
-        borderRadius: 10,
-        cursor: canSave ? 'pointer' : 'default',
-        fontFamily: 'var(--font-sans)',
-        fontWeight: 700,
-        fontSize: 13,
-        background: canSave ? 'var(--surface-3)' : 'var(--surface-1)',
-        border: canSave ? '1.5px solid var(--teal)' : '1.5px solid var(--surface-line-strong)',
-        color: canSave ? '#fff' : 'var(--fg-disabled)'
-      }
-    }, "Connect WHOOP"), /*#__PURE__*/React.createElement("div", {
-      style: {
+        marginTop: 14,
         display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 10,
-        padding: '11px 12px',
-        borderRadius: 10,
-        background: 'var(--surface-0)',
-        border: '1px dashed var(--surface-line)',
-        opacity: 0.6
+        flexDirection: 'column',
+        gap: 12
       }
-    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 700,
-        color: 'var(--fg-2)'
-      }
-    }, "Apple Health"), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12,
-        color: 'var(--fg-3)',
-        marginTop: 2
-      }
-    }, "Not available ", '—', " Apple Health data never leaves your phone."))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    }, /*#__PURE__*/React.createElement(WhoopStatus, {
+      whoop: whoop,
+      color: color
+    }), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
       style: lbl
     }, "Minimum duration ", '—', " ", minDur, " min"), /*#__PURE__*/React.createElement("input", {
       type: "range",
@@ -3004,7 +3108,7 @@
         marginTop: 6,
         lineHeight: 1.5
       }
-    }, "A day counts when one workout runs at least ", minDur, " minutes.", minStrain > 0 ? ` Sessions WHOOP could only file under its generic "Activity" label must also reach strain ${minStrain} — a sport you named (weightlifting, swimming, …) counts on duration alone.` : '', " Walking never counts, at any length. Changing either re-checks your whole history instantly.")))), !codingOn && !fitnessOn && /*#__PURE__*/React.createElement("div", {
+    }, "A day counts when one workout runs at least ", minDur, " minutes.", minStrain > 0 ? ` Sessions WHOOP could only file under its generic "Activity" label must also reach strain ${minStrain} — a sport you named (weightlifting, swimming, …) counts on duration alone.` : '', " Walking never counts, at any length. Changing either re-checks your whole history instantly.")))), !preset && /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 16
       }
@@ -3036,7 +3140,7 @@
         color: 'var(--fg-3)',
         marginTop: 7
       }
-    }, type === 'binary' ? 'Each day is simply done or not done.' : 'Log a number each day, shaded by intensity.')), type === 'count' && !codingOn && !fitnessOn && /*#__PURE__*/React.createElement("div", {
+    }, type === 'binary' ? 'Each day is simply done or not done.' : 'Log a number each day, shaded by intensity.')), type === 'count' && !preset && /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 16
       }
@@ -3051,7 +3155,7 @@
     }, /*#__PURE__*/React.createElement("input", {
       type: "range",
       min: 2,
-      max: 7,
+      max: 9,
       value: levels,
       onChange: e => setLevels(Number(e.target.value)),
       style: {
@@ -3088,7 +3192,7 @@
     }, "Color"), /*#__PURE__*/React.createElement(ColorPicker, {
       value: color,
       onChange: setColor
-    })), !codingOn && /*#__PURE__*/React.createElement("div", {
+    })), !preset && /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 16
       }
@@ -3224,6 +3328,10 @@
   function SettingsModal({
     settings,
     email,
+    whoop,
+    whoopHabits = [],
+    onConnectWhoop,
+    onDisconnectWhoop,
     onSave,
     onSignOut,
     onClose
@@ -3386,6 +3494,133 @@
       }
     }, /*#__PURE__*/React.createElement("label", {
       style: lbl
+    }, "Connections"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: '12px',
+        borderRadius: 11,
+        background: 'var(--surface-0)',
+        border: '1px solid var(--surface-line)'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1,
+        minWidth: 0
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 700,
+        color: 'var(--fg-1)'
+      }
+    }, "WHOOP"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: 'var(--fg-3)',
+        marginTop: 2
+      }
+    }, whoop && whoop.connected ? `${whoop.whoop_name ? whoop.whoop_name + ' · ' : ''}${whoop.last_synced_at ? 'synced ' + relTime(whoop.last_synced_at) : 'not synced yet'}` : 'Not connected'), whoopHabits.length > 0 && whoop && whoop.connected && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--fg-3)',
+        marginTop: 4
+      }
+    }, "Used by ", whoopHabits.join(', '))), whoop && whoop.connected ? /*#__PURE__*/React.createElement("button", {
+      onClick: onDisconnectWhoop,
+      style: {
+        flex: 'none',
+        fontSize: 12,
+        padding: '8px 12px',
+        borderRadius: 999,
+        cursor: 'pointer',
+        background: 'transparent',
+        border: '1px solid var(--surface-line-strong)',
+        color: 'var(--recovery-low)',
+        fontFamily: 'var(--font-sans)',
+        fontWeight: 700
+      }
+    }, "Disconnect") : /*#__PURE__*/React.createElement("button", {
+      onClick: onConnectWhoop,
+      style: {
+        flex: 'none',
+        fontSize: 12,
+        padding: '8px 14px',
+        borderRadius: 999,
+        cursor: 'pointer',
+        background: 'var(--surface-3)',
+        border: '1.5px solid var(--teal)',
+        color: '#fff',
+        fontFamily: 'var(--font-sans)',
+        fontWeight: 700
+      }
+    }, "Connect")), whoop && whoop.connected && !hasSleepScope(whoop) && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 10,
+        paddingTop: 10,
+        borderTop: '1px solid var(--surface-line)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1,
+        fontSize: 12,
+        color: 'var(--fg-3)',
+        lineHeight: 1.45
+      }
+    }, "Sleep access not granted ", '—', " this connection predates sleep support. Workouts are unaffected."), /*#__PURE__*/React.createElement("button", {
+      onClick: onConnectWhoop,
+      style: {
+        flex: 'none',
+        fontSize: 12,
+        padding: '8px 12px',
+        borderRadius: 999,
+        cursor: 'pointer',
+        background: 'transparent',
+        border: '1px solid rgba(255,180,0,0.5)',
+        color: '#FFC400',
+        fontFamily: 'var(--font-sans)',
+        fontWeight: 700,
+        whiteSpace: 'nowrap'
+      }
+    }, "Re-authorize"))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 8,
+        padding: '11px 12px',
+        borderRadius: 11,
+        background: 'var(--surface-0)',
+        border: '1px dashed var(--surface-line)',
+        opacity: 0.6
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 700,
+        color: 'var(--fg-2)'
+      }
+    }, "Apple Health"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: 'var(--fg-3)',
+        marginTop: 2
+      }
+    }, "Not available ", '—', " Apple Health data never leaves your phone."))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        borderTop: '1px solid var(--surface-line)',
+        margin: '4px 0 16px'
+      }
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 18
+      }
+    }, /*#__PURE__*/React.createElement("label", {
+      style: lbl
     }, "Account"), /*#__PURE__*/React.createElement("div", {
       style: {
         display: 'flex',
@@ -3531,6 +3766,7 @@
     const [whoop, setWhoop] = useState(DEFAULT_WHOOP);
     const [fitnessManual, setFitnessManual] = useState({}); // { 'YYYY-MM-DD': true }
     const [whoopWorkouts, setWhoopWorkouts] = useState({}); // { 'YYYY-MM-DD': [ {...} ] }
+    const [whoopSleep, setWhoopSleep] = useState({}); // { 'YYYY-MM-DD': [ {...} ] }
 
     const habit = habits.find(h => h.id === activeId) || null;
     const data = habit ? store[habit.id] || {} : {};
@@ -3549,6 +3785,7 @@
         setWhoop(wc);
         setFitnessManual(fm);
         setWhoopWorkouts(ww);
+        fetchWhoopSleep().then(setWhoopSleep);
         applyPrimaryColor(st.primary_color);
         setSynced(true);
       });
@@ -3615,6 +3852,9 @@
         fetchWhoopWorkouts().then(w => {
           if (mounted) setWhoopWorkouts(w);
         });
+        fetchWhoopSleep().then(sl => {
+          if (mounted) setWhoopSleep(sl);
+        });
       }).subscribe();
       const fmChannel = sb.channel('fitness_manual_rt').on('postgres_changes', {
         event: '*',
@@ -3647,6 +3887,7 @@
             setWhoopWorkouts(ww);
             setFitnessManual(fm);
             setSyncing(false);
+            fetchWhoopSleep().then(setWhoopSleep);
           });
         });
       } else if (w === 'error') {
@@ -3722,6 +3963,7 @@
           setWhoopWorkouts(ww);
           setFitnessManual(fm);
           setSyncing(false);
+          fetchWhoopSleep().then(setWhoopSleep);
         });
       });
     };
@@ -3859,7 +4101,7 @@
         }));
       } else {
         // Coding and fitness habits use deterministic ids so they pair 1:1 with their profile row.
-        const id = form.source === 'coding' ? `coding-${userId}` : form.source === 'fitness' ? `fitness-${userId}` : slugify(form.name);
+        const id = form.source === 'coding' ? `coding-${userId}` : form.source === 'fitness' ? `fitness-${userId}` : form.source === 'sleep' ? `sleep-${userId}` : slugify(form.name);
         const sort_order = habits.length ? Math.max(...habits.map(h => h.sort_order)) + 1 : 0;
         setHabits(prev => [...prev.filter(h => h.id !== id), rowToHabit({
           id,
@@ -3889,6 +4131,16 @@
               setStore(s);
               setWhoop(wc);
               setFitnessManual(fm);
+            });
+          });
+        }
+        if (form.source === 'sleep') {
+          // Same for sleep: rows may already be stored from an earlier sync, and the
+          // trigger no-ops until a sleep habit exists to write them into.
+          repairSleepDays().then(() => {
+            Promise.all([fetchStore(), fetchWhoopConnection()]).then(([s, wc]) => {
+              setStore(s);
+              setWhoop(wc);
             });
           });
         }
@@ -4234,7 +4486,7 @@
     }, /*#__PURE__*/React.createElement(Icon, {
       name: "refresh",
       size: 16
-    }))), habit.source === 'fitness' && whoop.connected && /*#__PURE__*/React.createElement("button", {
+    }))), (habit.source === 'fitness' || habit.source === 'sleep') && whoop.connected && /*#__PURE__*/React.createElement("button", {
       onClick: refreshWhoop,
       disabled: syncing,
       title: syncing ? 'Syncing…' : 'Refresh from WHOOP',
@@ -4272,7 +4524,7 @@
     }, /*#__PURE__*/React.createElement(Icon, {
       name: "refresh",
       size: 16
-    }))), habit.source === 'fitness' && !whoop.connected && /*#__PURE__*/React.createElement("button", {
+    }))), (habit.source === 'fitness' || habit.source === 'sleep') && !whoop.connected && /*#__PURE__*/React.createElement("button", {
       onClick: startWhoopConnect,
       title: "Reconnect WHOOP",
       className: "auth-ghost-btn",
@@ -4342,6 +4594,7 @@
       onCodingManual: onCodingManual,
       onCodingNote: onCodingNote,
       whoopWorkouts: habit.source === 'fitness' ? whoopWorkouts : null,
+      whoopSleep: habit.source === 'sleep' ? whoopSleep : null,
       fitnessManual: habit.source === 'fitness' ? fitnessManual : null,
       whoop: whoop,
       onFitnessManual: onFitnessManual
@@ -4358,7 +4611,7 @@
       name: "pencil",
       size: 13,
       color: "var(--fg-3)"
-    }), /*#__PURE__*/React.createElement("span", null, "Click any day to log ", habit.name, " and add a note ", '\u00b7', " hover to review"))), /*#__PURE__*/React.createElement(WeekReport, {
+    }), /*#__PURE__*/React.createElement("span", null, habit.source === 'sleep' ? `${habit.name} syncs from WHOOP \u00b7 click a day for the full breakdown` : `Click any day to log ${habit.name} and add a note \u00b7 hover to review`))), /*#__PURE__*/React.createElement(WeekReport, {
       habit: habit,
       data: data,
       today: today
@@ -4448,6 +4701,10 @@
       key: "settings-modal",
       settings: settings,
       email: email,
+      whoop: whoop,
+      whoopHabits: habits.filter(h => h.source === 'fitness' || h.source === 'sleep').map(h => h.name),
+      onConnectWhoop: startWhoopConnect,
+      onDisconnectWhoop: onDisconnectWhoop,
       onSave: saveAppSettings,
       onSignOut: () => sb.auth.signOut(),
       onClose: cancelSettings
