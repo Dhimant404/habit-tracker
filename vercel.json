@@ -2,5 +2,18 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "",
   "outputDirectory": ".",
-  "framework": null
+  "framework": null,
+  "redirects": [
+    {
+      "source": "/",
+      "has": [{ "type": "host", "value": "(www\\.)?dhimant\\.fun" }],
+      "destination": "/habit",
+      "permanent": false
+    }
+  ],
+  "rewrites": [
+    { "source": "/habit", "destination": "/index.html" },
+    { "source": "/habit/", "destination": "/index.html" },
+    { "source": "/habit/:path*", "destination": "/:path*" }
+  ]
 }
