@@ -674,6 +674,8 @@
   const FITNESS_MANUAL_TABLE = 'fitness_manual';
   const WHOOP_WORKOUTS_TABLE = 'whoop_workouts';
   const WHOOP_SLEEP_TABLE = 'whoop_sleep';
+  const WHOOP_CYCLES_TABLE = 'whoop_cycles';
+  const INTAKE_DAILY_TABLE = 'intake_daily';
   const DEFAULT_WHOOP = {
     connected: false,
     whoop_name: null,
@@ -813,6 +815,21 @@
     }
     return data || 0;
   }
+
+  /* Same idea for calories: whoop_cycles/intake_daily rows may already exist (cycles
+     sync nightly regardless; intake is written by the external assistant on its own
+     schedule) before a calories habit exists to materialize them into. */
+  async function repairCalorieDays() {
+    const {
+      data,
+      error
+    } = await sb.rpc('recompute_my_calorie_days');
+    if (error) {
+      console.error('Calorie repair failed:', error.message);
+      return 0;
+    }
+    return data || 0;
+  }
   async function triggerWhoopSync(mode) {
     try {
       const {
@@ -907,6 +924,40 @@
     }
     (data || []).forEach(r => {
       (out[r.day] = out[r.day] || []).push(r);
+    });
+    return out;
+  }
+
+  /* Cycle burn per day, for the Calories habit: { 'YYYY-MM-DD': [ {kilojoule, strain} ] } */
+  async function fetchWhoopCycles() {
+    const out = {};
+    const {
+      data,
+      error
+    } = await sb.from(WHOOP_CYCLES_TABLE).select('day, kilojoule, strain').order('start_at');
+    if (error) {
+      console.error('WHOOP cycles fetch failed:', error.message);
+      return out;
+    }
+    (data || []).forEach(r => {
+      (out[r.day] = out[r.day] || []).push(r);
+    });
+    return out;
+  }
+
+  /* Food intake per day, written by the external relay: { 'YYYY-MM-DD': {total_kcal, meals, notes} } */
+  async function fetchIntakeDaily() {
+    const out = {};
+    const {
+      data,
+      error
+    } = await sb.from(INTAKE_DAILY_TABLE).select('day, total_kcal, meals, notes');
+    if (error) {
+      console.error('Intake fetch failed:', error.message);
+      return out;
+    }
+    (data || []).forEach(r => {
+      out[r.day] = r;
     });
     return out;
   }
@@ -1048,6 +1099,40 @@
     if (!entry || !entry.v) return false;
     return habit.type === 'binary' ? true : rampIndex(habit, entry.v) >= (habit.levels || 5);
   }
+
+  /* Calories: a diverging ramp, not the usual single-hue one. habit_entries.value only
+     ever holds kcal eaten (see recompute_calorie_day) — deficit/surplus is derived live
+     here from the raw burn (whoop_cycles) and intake (intake_daily) for the day, so the
+     heatmap never trusts a stale materialized number for which way the day went. */
+  const CALORIE_BANDS = [150, 350, 600, 900]; // kcal magnitude -> shade band, upper edges
+  const CALORIE_LEVELS = CALORIE_BANDS.length + 1;
+  const CALORIE_SURPLUS_COLOR = '#FF0026'; // fixed red (matches --recovery-low) — surplus reads as
+  // "bad" the same way for every user, unlike the habit's
+  // own (customizable) accent, which only colors the deficit side.
+  function calorieBand(absKcal) {
+    let i = 0;
+    while (i < CALORIE_BANDS.length && absKcal >= CALORIE_BANDS[i]) i++;
+    return i + 1;
+  }
+  function calorieDeficit(cycles, intake) {
+    if (!cycles || !cycles.length || !intake) return null;
+    const burnKcal = cycles.reduce((a, c) => a + (Number(c.kilojoule) || 0), 0) / 4.184;
+    return {
+      burnKcal,
+      eatenKcal: Number(intake.total_kcal) || 0,
+      deficit: burnKcal - (Number(intake.total_kcal) || 0)
+    };
+  }
+  function calorieCellColor(habit, cycles, intake) {
+    const d = calorieDeficit(cycles, intake);
+    if (!d) return EMPTY_CELL;
+    const band = calorieBand(Math.abs(d.deficit));
+    return rampColor(d.deficit >= 0 ? habit.color : CALORIE_SURPLUS_COLOR, CALORIE_LEVELS, band);
+  }
+  function calorieIsMax(cycles, intake) {
+    const d = calorieDeficit(cycles, intake);
+    return !!d && d.deficit >= 0 && calorieBand(Math.abs(d.deficit)) >= CALORIE_LEVELS;
+  }
   function singular(u) {
     return u && u.endsWith('s') ? u.slice(0, -1) : u;
   }
@@ -1080,6 +1165,8 @@
     breakdown,
     workouts,
     sleeps,
+    cycles,
+    intake,
     manualOn,
     whoop,
     rect
@@ -1091,12 +1178,14 @@
     const val = entry ? entry.v : 0;
     const isCoding = habit.source === 'coding';
     const isFitness = habit.source === 'fitness';
+    const isCalories = habit.source === 'calories';
     const bd = breakdown || {
       leetcode: 0,
       gfg: 0,
       manual: 0
     };
     const wk = workouts || [];
+    const cal = isCalories ? calorieDeficit(cycles, intake) : null;
     const valTxt = habit.type === 'binary' ? val ? 'Done' : 'Not done' : `${val} ${unitLabel(habit, val)}`;
     // Portal to <body> so its fixed coordinates are viewport-relative, not
     // confined to the heatmap card (whose backdrop-filter is a containing block).
@@ -1138,7 +1227,7 @@
         width: 9,
         height: 9,
         borderRadius: 2,
-        background: cellColor(habit, entry),
+        background: isCalories ? calorieCellColor(habit, cycles, intake) : cellColor(habit, entry),
         flex: 'none'
       }
     }), /*#__PURE__*/React.createElement("span", {
@@ -1147,7 +1236,44 @@
         fontSize: 15,
         color: val ? '#fff' : 'var(--fg-3)'
       }
-    }, valTxt)), isCoding ? /*#__PURE__*/React.createElement("div", {
+    }, valTxt)), isCalories ? /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 7,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 3,
+        fontSize: 12,
+        color: 'var(--fg-2)'
+      }
+    }, cal ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        justifyContent: 'space-between'
+      }
+    }, /*#__PURE__*/React.createElement("span", null, "Burned"), /*#__PURE__*/React.createElement("span", {
+      className: "whoop-num"
+    }, Math.round(cal.burnKcal))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        justifyContent: 'space-between'
+      }
+    }, /*#__PURE__*/React.createElement("span", null, "Eaten"), /*#__PURE__*/React.createElement("span", {
+      className: "whoop-num"
+    }, Math.round(cal.eatenKcal))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        fontWeight: 700,
+        color: cal.deficit >= 0 ? habit.accent : CALORIE_SURPLUS_COLOR
+      }
+    }, /*#__PURE__*/React.createElement("span", null, cal.deficit >= 0 ? 'Deficit' : 'Surplus'), /*#__PURE__*/React.createElement("span", {
+      className: "whoop-num"
+    }, Math.round(Math.abs(cal.deficit))))) : /*#__PURE__*/React.createElement("div", {
+      style: {
+        color: 'var(--fg-disabled)',
+        fontStyle: 'italic'
+      }
+    }, "Not tracked")) : isCoding ? /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 7,
         display: 'flex',
@@ -1279,6 +1405,8 @@
     breakdown,
     workouts,
     sleeps,
+    cycles,
+    intake,
     manualOn,
     autoGreen,
     whoop,
@@ -1299,8 +1427,10 @@
     const isCoding = habit.source === 'coding';
     const isFitness = habit.source === 'fitness';
     const isSleep = habit.source === 'sleep';
+    const isCalories = habit.source === 'calories';
     const wk = workouts || [];
     const sl = sleeps || [];
+    const cal = isCalories ? calorieDeficit(cycles, intake) : null;
     // Coding habit: total = leetcode + gfg + manual; the +/- adjusts only manual.
     const bd = breakdown || {
       leetcode: 0,
@@ -1319,7 +1449,7 @@
       v: Math.min(maxV, Math.max(0, nv)),
       note
     });
-    const setNote = nn => isCoding || isFitness || isSleep ? onNote(key, nn) : onChange({
+    const setNote = nn => isCoding || isFitness || isSleep || isCalories ? onNote(key, nn) : onChange({
       v,
       note: nn
     });
@@ -1652,7 +1782,50 @@
         textAlign: 'center',
         lineHeight: 1.5
       }
-    }, "Synced from WHOOP ", '·', " filed on the day you woke up. You can still add a note.")) : habit.type === 'binary' ? /*#__PURE__*/React.createElement("button", {
+    }, "Synced from WHOOP ", '·', " filed on the day you woke up. You can still add a note.")) : isCalories ?
+    /*#__PURE__*/
+    /* Read-only, like sleep: both sides are externally synced (WHOOP + your
+       assistant), so a hand-edit here would just be overwritten by the next sync. */
+    React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        textAlign: 'center'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "whoop-num",
+      style: {
+        fontSize: 52,
+        lineHeight: 1,
+        color: cal ? calorieCellColor(habit, cycles, intake) : 'var(--fg-3)'
+      }
+    }, cal ? Math.round(Math.abs(cal.deficit)) : '—'), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: '.14em',
+        textTransform: 'uppercase',
+        color: 'var(--fg-3)',
+        marginTop: 4
+      }
+    }, cal ? cal.deficit >= 0 ? 'kcal deficit' : 'kcal surplus' : 'not tracked yet')), cal && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 14,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 9,
+        padding: '13px 14px',
+        borderRadius: 12,
+        background: 'var(--surface-0)',
+        border: '1px solid var(--surface-line)'
+      }
+    }, srcRow('Burned (WHOOP)', Math.round(cal.burnKcal), habit.accent), srcRow('Eaten', Math.round(cal.eatenKcal), 'var(--fg-3)')), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--fg-3)',
+        marginTop: 8,
+        textAlign: 'center',
+        lineHeight: 1.5
+      }
+    }, "Fills in once both WHOOP burn and your logged intake exist for the day. You can still add a note.")) : habit.type === 'binary' ? /*#__PURE__*/React.createElement("button", {
       onClick: () => setV(v ? 0 : 1),
       style: {
         width: '100%',
@@ -1754,10 +1927,13 @@
     onCodingNote,
     whoopWorkouts,
     whoopSleep,
+    whoopCycles,
+    intakeDaily,
     fitnessManual,
     whoop,
     onFitnessManual
   }) {
+    const isCalories = habit.source === 'calories';
     const [hover, setHover] = useState(null);
     const [sel, setSel] = useState(null);
     const scrollRef = useRef(null);
@@ -1819,7 +1995,10 @@
       const key = keyOf(date);
       const entry = data[key];
       const selected = sel && sel.key === key;
-      const max = isMax(habit, entry);
+      const cellCyc = isCalories && whoopCycles ? whoopCycles[key] : null;
+      const cellIntake = isCalories && intakeDaily ? intakeDaily[key] : null;
+      const bg = isCalories ? calorieCellColor(habit, cellCyc, cellIntake) : cellColor(habit, entry);
+      const max = isCalories ? calorieIsMax(cellCyc, cellIntake) : isMax(habit, entry);
       return /*#__PURE__*/React.createElement("div", {
         key: di,
         className: "hm-cell",
@@ -1837,13 +2016,13 @@
           height: CELL,
           borderRadius: 3,
           cursor: 'pointer',
-          background: cellColor(habit, entry),
+          background: bg,
           outline: selected ? '2px solid var(--teal)' : '1px solid rgba(255,255,255,0.045)',
           outlineOffset: selected ? 1 : -1,
-          boxShadow: max ? `0 0 7px ${cellColor(habit, entry)}` : 'none'
+          boxShadow: max ? `0 0 7px ${bg}` : 'none'
         }
       });
-    })))), [weeks, data, habit, sel]);
+    })))), [weeks, data, habit, sel, whoopCycles, intakeDaily]);
     return /*#__PURE__*/React.createElement("div", {
       ref: scrollRef,
       style: {
@@ -1913,7 +2092,29 @@
         marginTop: 14,
         paddingRight: 2
       }
-    }, /*#__PURE__*/React.createElement("span", {
+    }, isCalories ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: CALORIE_SURPLUS_COLOR,
+        fontWeight: 600
+      }
+    }, "Surplus"), [...rampScale(CALORIE_SURPLUS_COLOR, CALORIE_LEVELS).slice(1).reverse(), EMPTY_CELL, ...rampScale(habit.color, CALORIE_LEVELS).slice(1)].map((c, i) => /*#__PURE__*/React.createElement("span", {
+      key: i,
+      style: {
+        width: CELL,
+        height: CELL,
+        borderRadius: 3,
+        background: c,
+        outline: '1px solid rgba(255,255,255,0.045)',
+        outlineOffset: -1
+      }
+    })), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: habit.accent,
+        fontWeight: 600
+      }
+    }, "Deficit")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 11,
         color: 'var(--fg-3)',
@@ -1935,13 +2136,15 @@
         color: 'var(--fg-3)',
         fontWeight: 600
       }
-    }, "More"))), hover && !sel && /*#__PURE__*/React.createElement(Tooltip, {
+    }, "More")))), hover && !sel && /*#__PURE__*/React.createElement(Tooltip, {
       habit: habit,
       date: hover.date,
       entry: data[hover.key],
       breakdown: codingDaily && codingDaily[hover.key],
       workouts: whoopWorkouts && whoopWorkouts[hover.key],
       sleeps: whoopSleep && whoopSleep[hover.key],
+      cycles: whoopCycles && whoopCycles[hover.key],
+      intake: intakeDaily && intakeDaily[hover.key],
       manualOn: !!(fitnessManual && fitnessManual[hover.key]),
       whoop: whoop,
       rect: hover.rect
@@ -1953,6 +2156,8 @@
       breakdown: codingDaily && codingDaily[sel.key],
       workouts: whoopWorkouts && whoopWorkouts[sel.key],
       sleeps: whoopSleep && whoopSleep[sel.key],
+      cycles: whoopCycles && whoopCycles[sel.key],
+      intake: intakeDaily && intakeDaily[sel.key],
       manualOn: !!(fitnessManual && fitnessManual[sel.key]),
       autoGreen: whoopWorkouts ? whoopQualifies(whoopWorkouts[sel.key], whoop) : false,
       whoop: whoop,
@@ -2337,12 +2542,15 @@
     entry,
     future,
     isToday,
-    exactV
+    exactV,
+    cycles,
+    intake
   }) {
     const v = entry ? entry.v : 0;
+    const isCalories = habit.source === 'calories';
     const done = habit.type === 'binary' ? !!v : v > 0;
     const bright = habit.type === 'binary' || v >= 4;
-    const bg = future ? 'transparent' : cellColor(habit, entry);
+    const bg = future ? 'transparent' : isCalories ? calorieCellColor(habit, cycles, intake) : cellColor(habit, entry);
     const note = entry && entry.note ? entry.note : '';
     // Show exact time where we have it, so 6h30m reads 6.5 and the seven circles sum
     // to the week total printed above them rather than appearing to fall short.
@@ -2407,7 +2615,9 @@
     total,
     delta,
     nav,
-    exact
+    exact,
+    whoopCycles,
+    intakeDaily
   }) {
     const days = weekDates(monday);
     const accent = habit.accent;
@@ -2493,7 +2703,9 @@
       entry: data[keyOf(d)],
       future: d > today,
       isToday: keyOf(d) === keyOf(today),
-      exactV: exact ? exact[keyOf(d)] : null
+      exactV: exact ? exact[keyOf(d)] : null,
+      cycles: whoopCycles && whoopCycles[keyOf(d)],
+      intake: intakeDaily && intakeDaily[keyOf(d)]
     }))));
   }
 
@@ -2536,7 +2748,9 @@
     habit,
     data,
     today,
-    exact
+    exact,
+    whoopCycles,
+    intakeDaily
   }) {
     const mobile = useIsMobile();
     const [back, setBack] = useState(1); // left block: how many weeks ago (1 = last week)
@@ -2583,6 +2797,8 @@
       today: today,
       total: leftTotal,
       exact: exact,
+      whoopCycles: whoopCycles,
+      intakeDaily: intakeDaily,
       delta: back > 1 ? /*#__PURE__*/React.createElement(Delta, {
         now: leftTotal,
         base: sum(addDays(leftMon, -7))
@@ -2643,6 +2859,8 @@
       today: today,
       total: thisTotal,
       exact: exact,
+      whoopCycles: whoopCycles,
+      intakeDaily: intakeDaily,
       delta: /*#__PURE__*/React.createElement(Delta, {
         now: thisTotal,
         base: leftTotal
@@ -2811,11 +3029,12 @@
     /* One source at a time. This was two booleans that silently cancelled each other;
        a single value makes the exclusivity real instead of a convention, and the old
        codingOn/fitnessOn are derived so every downstream conditional is unchanged. */
-    const startPreset = initial && ['coding', 'fitness', 'sleep'].includes(initial.source) ? initial.source : null;
+    const startPreset = initial && ['coding', 'fitness', 'sleep', 'calories'].includes(initial.source) ? initial.source : null;
     const [preset, setPreset] = useState(startPreset);
     const codingOn = preset === 'coding';
     const fitnessOn = preset === 'fitness';
     const sleepOn = preset === 'sleep';
+    const caloriesOn = preset === 'calories';
     const [leetUser, setLeetUser] = useState(coding && coding.leetcode_username || '');
     const [gfgUser, setGfgUser] = useState(coding && coding.gfg_username || '');
     const [minDur, setMinDur] = useState(whoop && whoop.min_duration_min || 20);
@@ -2842,16 +3061,22 @@
         if (!name.trim()) setName('Sleep');
         if (icon === 'target') setIcon('moon');
         if (color === '#16EC06') setColor('#A855F7');
+      } else if (next === 'calories') {
+        // Green is already the default — deficit shades of it, surplus is a fixed red.
+        setType('count');
+        setLevels(CALORIE_LEVELS);
+        if (!name.trim()) setName('Calories');
+        if (icon === 'target') setIcon('apple');
       }
     };
     const submit = opts => {
       if (!canSave) return;
       const form = {
         name: name.trim(),
-        type: codingOn ? 'count' : fitnessOn ? 'binary' : sleepOn ? 'count' : type,
-        // Sleep stores hours but shades them into SLEEP_LEVELS bands.
-        levels: codingOn ? 5 : fitnessOn ? 1 : sleepOn ? SLEEP_LEVELS : type === 'count' ? levels : 1,
-        unit: codingOn ? 'solves' : fitnessOn ? 'times' : sleepOn ? 'hours' : unit.trim() || 'times',
+        type: codingOn ? 'count' : fitnessOn ? 'binary' : sleepOn || caloriesOn ? 'count' : type,
+        // Sleep and Calories store a real quantity but shade it into band-based levels.
+        levels: codingOn ? 5 : fitnessOn ? 1 : sleepOn ? SLEEP_LEVELS : caloriesOn ? CALORIE_LEVELS : type === 'count' ? levels : 1,
+        unit: codingOn ? 'solves' : fitnessOn ? 'times' : sleepOn ? 'hours' : caloriesOn ? 'kcal' : unit.trim() || 'times',
         icon,
         color,
         source: preset,
@@ -3029,6 +3254,11 @@
       icon: 'moon',
       label: 'Sleep',
       sub: 'WHOOP'
+    }, {
+      key: 'calories',
+      icon: 'apple',
+      label: 'Calories',
+      sub: 'WHOOP · Intake'
     }].map(p => {
       const on = preset === p.key;
       const accent = peakColor(hueOf(color));
@@ -3169,7 +3399,23 @@
         marginTop: 6,
         lineHeight: 1.5
       }
-    }, "A day counts when one workout runs at least ", minDur, " minutes.", minStrain > 0 ? ` Sessions WHOOP could only file under its generic "Activity" label must also reach strain ${minStrain} — a sport you named (weightlifting, swimming, …) counts on duration alone.` : '', " Walking never counts, at any length. Changing either re-checks your whole history instantly.")))), !preset && /*#__PURE__*/React.createElement("div", {
+    }, "A day counts when one workout runs at least ", minDur, " minutes.", minStrain > 0 ? ` Sessions WHOOP could only file under its generic "Activity" label must also reach strain ${minStrain} — a sport you named (weightlifting, swimming, …) counts on duration alone.` : '', " Walking never counts, at any length. Changing either re-checks your whole history instantly."))), caloriesOn && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 14,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12
+      }
+    }, /*#__PURE__*/React.createElement(WhoopStatus, {
+      whoop: whoop,
+      color: color
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: 'var(--fg-3)',
+        lineHeight: 1.5
+      }
+    }, "Combines WHOOP's daily calorie burn with the food intake your AI assistant logs. A day only fills in once ", /*#__PURE__*/React.createElement("b", null, "both"), " exist for it \u2014 no guessing on a partial day. Shaded in ", /*#__PURE__*/React.createElement("b", null, "deficit"), " (", color === '#16EC06' ? 'green' : 'your habit colour', ") or", ' ', /*#__PURE__*/React.createElement("b", null, "surplus"), " (red), by how large the gap is. Burn refreshes nightly with WHOOP; intake arrives whenever your assistant syncs it."))), !preset && /*#__PURE__*/React.createElement("div", {
       style: {
         marginBottom: 16
       }
@@ -3828,6 +4074,8 @@
     const [fitnessManual, setFitnessManual] = useState({}); // { 'YYYY-MM-DD': true }
     const [whoopWorkouts, setWhoopWorkouts] = useState({}); // { 'YYYY-MM-DD': [ {...} ] }
     const [whoopSleep, setWhoopSleep] = useState({}); // { 'YYYY-MM-DD': [ {...} ] }
+    const [whoopCycles, setWhoopCycles] = useState({}); // { 'YYYY-MM-DD': [ {kilojoule,strain} ] }
+    const [intakeDaily, setIntakeDaily] = useState({}); // { 'YYYY-MM-DD': {total_kcal,meals,notes} }
 
     const habit = habits.find(h => h.id === activeId) || null;
     const data = habit ? store[habit.id] || {} : {};
@@ -3848,6 +4096,8 @@
         setFitnessManual(fm);
         setWhoopWorkouts(ww);
         fetchWhoopSleep().then(setWhoopSleep);
+        fetchWhoopCycles().then(setWhoopCycles);
+        fetchIntakeDaily().then(setIntakeDaily);
         applyPrimaryColor(st.primary_color);
         setSynced(true);
       });
@@ -3927,9 +4177,27 @@
           if (mounted) setFitnessManual(m);
         });
       }).subscribe();
+      const wcyChannel = sb.channel('whoop_cycles_rt').on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: WHOOP_CYCLES_TABLE
+      }, () => {
+        fetchWhoopCycles().then(c => {
+          if (mounted) setWhoopCycles(c);
+        });
+      }).subscribe();
+      const idChannel = sb.channel('intake_daily_rt').on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: INTAKE_DAILY_TABLE
+      }, () => {
+        fetchIntakeDaily().then(i => {
+          if (mounted) setIntakeDaily(i);
+        });
+      }).subscribe();
       return () => {
         mounted = false;
-        [eChannel, hChannel, sChannel, cChannel, cdChannel, wChannel, wwChannel, fmChannel].forEach(ch => sb.removeChannel(ch));
+        [eChannel, hChannel, sChannel, cChannel, cdChannel, wChannel, wwChannel, fmChannel, wcyChannel, idChannel].forEach(ch => sb.removeChannel(ch));
       };
     }, []);
 
@@ -4163,7 +4431,7 @@
         }));
       } else {
         // Coding and fitness habits use deterministic ids so they pair 1:1 with their profile row.
-        const id = form.source === 'coding' ? `coding-${userId}` : form.source === 'fitness' ? `fitness-${userId}` : form.source === 'sleep' ? `sleep-${userId}` : slugify(form.name);
+        const id = form.source === 'coding' ? `coding-${userId}` : form.source === 'fitness' ? `fitness-${userId}` : form.source === 'sleep' ? `sleep-${userId}` : form.source === 'calories' ? `calories-${userId}` : slugify(form.name);
         const sort_order = habits.length ? Math.max(...habits.map(h => h.sort_order)) + 1 : 0;
         setHabits(prev => [...prev.filter(h => h.id !== id), rowToHabit({
           id,
@@ -4203,6 +4471,17 @@
             Promise.all([fetchStore(), fetchWhoopConnection()]).then(([s, wc]) => {
               setStore(s);
               setWhoop(wc);
+            });
+          });
+        }
+        if (form.source === 'calories') {
+          // Same idea: whoop_cycles and intake_daily rows may already both exist for
+          // overlapping days before this habit existed to materialize them into.
+          repairCalorieDays().then(() => {
+            Promise.all([fetchStore(), fetchWhoopCycles(), fetchIntakeDaily()]).then(([s, wcy, id]) => {
+              setStore(s);
+              setWhoopCycles(wcy);
+              setIntakeDaily(id);
             });
           });
         }
@@ -4657,6 +4936,8 @@
       onCodingNote: onCodingNote,
       whoopWorkouts: habit.source === 'fitness' ? whoopWorkouts : null,
       whoopSleep: habit.source === 'sleep' ? whoopSleep : null,
+      whoopCycles: habit.source === 'calories' ? whoopCycles : null,
+      intakeDaily: habit.source === 'calories' ? intakeDaily : null,
       fitnessManual: habit.source === 'fitness' ? fitnessManual : null,
       whoop: whoop,
       onFitnessManual: onFitnessManual
@@ -4677,7 +4958,9 @@
       habit: habit,
       data: data,
       today: today,
-      exact: exactValues
+      exact: exactValues,
+      whoopCycles: whoopCycles,
+      intakeDaily: intakeDaily
     }), /*#__PURE__*/React.createElement("div", {
       style: {
         marginTop: 16

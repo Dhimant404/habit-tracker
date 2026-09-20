@@ -305,6 +305,8 @@ const WHOOP_TABLE = 'whoop_connections';
 const FITNESS_MANUAL_TABLE = 'fitness_manual';
 const WHOOP_WORKOUTS_TABLE = 'whoop_workouts';
 const WHOOP_SLEEP_TABLE = 'whoop_sleep';
+const WHOOP_CYCLES_TABLE = 'whoop_cycles';
+const INTAKE_DAILY_TABLE = 'intake_daily';
 const DEFAULT_WHOOP = { connected: false, whoop_name: null, min_duration_min: 20, min_strain: 6,
   excluded_sports: ['walking', 'increase_relaxation'],
   last_synced_at: null, last_sync_status: null,
@@ -383,6 +385,15 @@ async function repairSleepDays() {
   return data || 0;
 }
 
+/* Same idea for calories: whoop_cycles/intake_daily rows may already exist (cycles
+   sync nightly regardless; intake is written by the external assistant on its own
+   schedule) before a calories habit exists to materialize them into. */
+async function repairCalorieDays() {
+  const { data, error } = await sb.rpc('recompute_my_calorie_days');
+  if (error) { console.error('Calorie repair failed:', error.message); return 0; }
+  return data || 0;
+}
+
 async function triggerWhoopSync(mode) {
   try {
     const { data, error } = await sb.functions.invoke('whoop-sync', { body: { mode: mode || 'recent' } });
@@ -436,6 +447,26 @@ async function fetchWhoopWorkouts() {
     .select('day, sport_name, duration_min, strain').order('start_at');
   if (error) { console.error('WHOOP workouts fetch failed:', error.message); return out; }
   (data || []).forEach((r) => { (out[r.day] = out[r.day] || []).push(r); });
+  return out;
+}
+
+/* Cycle burn per day, for the Calories habit: { 'YYYY-MM-DD': [ {kilojoule, strain} ] } */
+async function fetchWhoopCycles() {
+  const out = {};
+  const { data, error } = await sb.from(WHOOP_CYCLES_TABLE)
+    .select('day, kilojoule, strain').order('start_at');
+  if (error) { console.error('WHOOP cycles fetch failed:', error.message); return out; }
+  (data || []).forEach((r) => { (out[r.day] = out[r.day] || []).push(r); });
+  return out;
+}
+
+/* Food intake per day, written by the external relay: { 'YYYY-MM-DD': {total_kcal, meals, notes} } */
+async function fetchIntakeDaily() {
+  const out = {};
+  const { data, error } = await sb.from(INTAKE_DAILY_TABLE)
+    .select('day, total_kcal, meals, notes');
+  if (error) { console.error('Intake fetch failed:', error.message); return out; }
+  (data || []).forEach((r) => { out[r.day] = r; });
   return out;
 }
 
@@ -550,6 +581,36 @@ function isMax(habit, entry) {
   if (!entry || !entry.v) return false;
   return habit.type === 'binary' ? true : rampIndex(habit, entry.v) >= (habit.levels || 5);
 }
+
+/* Calories: a diverging ramp, not the usual single-hue one. habit_entries.value only
+   ever holds kcal eaten (see recompute_calorie_day) — deficit/surplus is derived live
+   here from the raw burn (whoop_cycles) and intake (intake_daily) for the day, so the
+   heatmap never trusts a stale materialized number for which way the day went. */
+const CALORIE_BANDS = [150, 350, 600, 900]; // kcal magnitude -> shade band, upper edges
+const CALORIE_LEVELS = CALORIE_BANDS.length + 1;
+const CALORIE_SURPLUS_COLOR = '#FF0026'; // fixed red (matches --recovery-low) — surplus reads as
+                                          // "bad" the same way for every user, unlike the habit's
+                                          // own (customizable) accent, which only colors the deficit side.
+function calorieBand(absKcal) {
+  let i = 0;
+  while (i < CALORIE_BANDS.length && absKcal >= CALORIE_BANDS[i]) i++;
+  return i + 1;
+}
+function calorieDeficit(cycles, intake) {
+  if (!cycles || !cycles.length || !intake) return null;
+  const burnKcal = cycles.reduce((a, c) => a + (Number(c.kilojoule) || 0), 0) / 4.184;
+  return { burnKcal, eatenKcal: Number(intake.total_kcal) || 0, deficit: burnKcal - (Number(intake.total_kcal) || 0) };
+}
+function calorieCellColor(habit, cycles, intake) {
+  const d = calorieDeficit(cycles, intake);
+  if (!d) return EMPTY_CELL;
+  const band = calorieBand(Math.abs(d.deficit));
+  return rampColor(d.deficit >= 0 ? habit.color : CALORIE_SURPLUS_COLOR, CALORIE_LEVELS, band);
+}
+function calorieIsMax(cycles, intake) {
+  const d = calorieDeficit(cycles, intake);
+  return !!d && d.deficit >= 0 && calorieBand(Math.abs(d.deficit)) >= CALORIE_LEVELS;
+}
 function singular(u) { return u && u.endsWith('s') ? u.slice(0, -1) : u; }
 function unitLabel(habit, v) { return v === 1 ? singular(habit.unit) : habit.unit; }
 
@@ -568,7 +629,7 @@ function monthLabels(weeks) {
 }
 
 /* Tooltip */
-function Tooltip({ habit, date, entry, breakdown, workouts, sleeps, manualOn, whoop, rect }) {
+function Tooltip({ habit, date, entry, breakdown, workouts, sleeps, cycles, intake, manualOn, whoop, rect }) {
   if (!rect) return null;
   const W = 210;
   const left = Math.min(window.innerWidth - W - 8, Math.max(8, rect.left + rect.width / 2 - W / 2));
@@ -576,8 +637,10 @@ function Tooltip({ habit, date, entry, breakdown, workouts, sleeps, manualOn, wh
   const val = entry ? entry.v : 0;
   const isCoding = habit.source === 'coding';
   const isFitness = habit.source === 'fitness';
+  const isCalories = habit.source === 'calories';
   const bd = breakdown || { leetcode: 0, gfg: 0, manual: 0 };
   const wk = workouts || [];
+  const cal = isCalories ? calorieDeficit(cycles, intake) : null;
   const valTxt = habit.type === 'binary'
     ? (val ? 'Done' : 'Not done')
     : `${val} ${unitLabel(habit, val)}`;
@@ -591,10 +654,20 @@ function Tooltip({ habit, date, entry, breakdown, workouts, sleeps, manualOn, wh
     }}>
       <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>{fmtLong(date)}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 5 }}>
-        <span style={{ width: 9, height: 9, borderRadius: 2, background: cellColor(habit, entry), flex: 'none' }} />
+        <span style={{ width: 9, height: 9, borderRadius: 2, background: isCalories ? calorieCellColor(habit, cycles, intake) : cellColor(habit, entry), flex: 'none' }} />
         <span className="whoop-num" style={{ fontSize: 15, color: val ? '#fff' : 'var(--fg-3)' }}>{valTxt}</span>
       </div>
-      {isCoding ? (
+      {isCalories ? (
+        <div style={{ marginTop: 7, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12, color: 'var(--fg-2)' }}>
+          {cal ? (<>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Burned</span><span className="whoop-num">{Math.round(cal.burnKcal)}</span></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Eaten</span><span className="whoop-num">{Math.round(cal.eatenKcal)}</span></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 700, color: cal.deficit >= 0 ? habit.accent : CALORIE_SURPLUS_COLOR }}>
+              <span>{cal.deficit >= 0 ? 'Deficit' : 'Surplus'}</span><span className="whoop-num">{Math.round(Math.abs(cal.deficit))}</span>
+            </div>
+          </>) : <div style={{ color: 'var(--fg-disabled)', fontStyle: 'italic' }}>Not tracked</div>}
+        </div>
+      ) : isCoding ? (
         <div style={{ marginTop: 7, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12, color: 'var(--fg-2)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>LeetCode</span><span className="whoop-num">{bd.leetcode || 0}</span></div>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>GeeksforGeeks</span><span className="whoop-num">{bd.gfg || 0}</span></div>
@@ -640,7 +713,7 @@ function RoundBtn({ icon, onClick, disabled }) {
   );
 }
 
-function Editor({ habit, date, entry, breakdown, workouts, sleeps, manualOn, autoGreen, whoop, onChange, onManual, onNote, onFitnessManual, onClose }) {
+function Editor({ habit, date, entry, breakdown, workouts, sleeps, cycles, intake, manualOn, autoGreen, whoop, onChange, onManual, onNote, onFitnessManual, onClose }) {
   // Close on Escape for keyboard users.
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -651,8 +724,10 @@ function Editor({ habit, date, entry, breakdown, workouts, sleeps, manualOn, aut
   const isCoding = habit.source === 'coding';
   const isFitness = habit.source === 'fitness';
   const isSleep = habit.source === 'sleep';
+  const isCalories = habit.source === 'calories';
   const wk = workouts || [];
   const sl = sleeps || [];
+  const cal = isCalories ? calorieDeficit(cycles, intake) : null;
   // Coding habit: total = leetcode + gfg + manual; the +/- adjusts only manual.
   const bd = breakdown || { leetcode: 0, gfg: 0, manual: 0 };
   const lc = bd.leetcode || 0, gfg = bd.gfg || 0, manual = bd.manual || 0;
@@ -663,7 +738,7 @@ function Editor({ habit, date, entry, breakdown, workouts, sleeps, manualOn, aut
   const note = entry ? entry.note || '' : '';
   const key = keyOf(date);
   const setV = (nv) => onChange({ v: Math.min(maxV, Math.max(0, nv)), note });
-  const setNote = (nn) => ((isCoding || isFitness || isSleep) ? onNote(key, nn) : onChange({ v, note: nn }));
+  const setNote = (nn) => ((isCoding || isFitness || isSleep || isCalories) ? onNote(key, nn) : onChange({ v, note: nn }));
   // Manual adjusts up without limit; down only until the day's total hits 0.
   const bumpManual = (delta) => onManual(key, Math.max(manual + delta, -auto), auto);
   const srcRow = (label, val, color) => (
@@ -768,6 +843,28 @@ function Editor({ habit, date, entry, breakdown, workouts, sleeps, manualOn, aut
               Synced from WHOOP {'·'} filed on the day you woke up. You can still add a note.
             </div>
           </div>
+        ) : isCalories ? (
+          /* Read-only, like sleep: both sides are externally synced (WHOOP + your
+             assistant), so a hand-edit here would just be overwritten by the next sync. */
+          <div>
+            <div style={{ textAlign: 'center' }}>
+              <div className="whoop-num" style={{ fontSize: 52, lineHeight: 1, color: cal ? calorieCellColor(habit, cycles, intake) : 'var(--fg-3)' }}>
+                {cal ? Math.round(Math.abs(cal.deficit)) : '—'}
+              </div>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)', marginTop: 4 }}>
+                {cal ? (cal.deficit >= 0 ? 'kcal deficit' : 'kcal surplus') : 'not tracked yet'}
+              </div>
+            </div>
+            {cal && (
+              <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 9, padding: '13px 14px', borderRadius: 12, background: 'var(--surface-0)', border: '1px solid var(--surface-line)' }}>
+                {srcRow('Burned (WHOOP)', Math.round(cal.burnKcal), habit.accent)}
+                {srcRow('Eaten', Math.round(cal.eatenKcal), 'var(--fg-3)')}
+              </div>
+            )}
+            <div style={{ fontSize: 11, color: 'var(--fg-3)', marginTop: 8, textAlign: 'center', lineHeight: 1.5 }}>
+              Fills in once both WHOOP burn and your logged intake exist for the day. You can still add a note.
+            </div>
+          </div>
         ) : habit.type === 'binary' ? (
           <button onClick={() => setV(v ? 0 : 1)} style={{
             width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9,
@@ -807,7 +904,8 @@ function Editor({ habit, date, entry, breakdown, workouts, sleeps, manualOn, aut
 }
 
 /* Heatmap grid */
-function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCodingNote, whoopWorkouts, whoopSleep, fitnessManual, whoop, onFitnessManual }) {
+function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCodingNote, whoopWorkouts, whoopSleep, whoopCycles, intakeDaily, fitnessManual, whoop, onFitnessManual }) {
+  const isCalories = habit.source === 'calories';
   const [hover, setHover] = useState(null);
   const [sel, setSel] = useState(null);
   const scrollRef = useRef(null);
@@ -843,7 +941,10 @@ function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCod
             const key = keyOf(date);
             const entry = data[key];
             const selected = sel && sel.key === key;
-            const max = isMax(habit, entry);
+            const cellCyc = isCalories && whoopCycles ? whoopCycles[key] : null;
+            const cellIntake = isCalories && intakeDaily ? intakeDaily[key] : null;
+            const bg = isCalories ? calorieCellColor(habit, cellCyc, cellIntake) : cellColor(habit, entry);
+            const max = isCalories ? calorieIsMax(cellCyc, cellIntake) : isMax(habit, entry);
             return (
               <div key={di} className="hm-cell"
                 onClick={(e) => onCellClick(date, e)}
@@ -851,17 +952,17 @@ function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCod
                 onMouseLeave={() => setHover((h) => (h && h.key === key ? null : h))}
                 style={{
                   width: CELL, height: CELL, borderRadius: 3, cursor: 'pointer',
-                  background: cellColor(habit, entry),
+                  background: bg,
                   outline: selected ? '2px solid var(--teal)' : '1px solid rgba(255,255,255,0.045)',
                   outlineOffset: selected ? 1 : -1,
-                  boxShadow: max ? `0 0 7px ${cellColor(habit, entry)}` : 'none',
+                  boxShadow: max ? `0 0 7px ${bg}` : 'none',
                 }} />
             );
           })}
         </motion.div>
       ))}
     </motion.div>
-  ), [weeks, data, habit, sel]);
+  ), [weeks, data, habit, sel, whoopCycles, intakeDaily]);
 
   return (
     <div ref={scrollRef} style={{ overflowX: 'auto', paddingBottom: 4 }}>
@@ -889,11 +990,19 @@ function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCod
 
         {/* legend */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 7, marginTop: 14, paddingRight: 2 }}>
-          <span style={{ fontSize: 11, color: 'var(--fg-3)', fontWeight: 600 }}>Less</span>
-          {(habit.type === 'binary' ? [EMPTY_CELL, habit.accent] : rampScale(habit.color, habit.levels || 5)).map((c, i) => (
-            <span key={i} style={{ width: CELL, height: CELL, borderRadius: 3, background: c, outline: '1px solid rgba(255,255,255,0.045)', outlineOffset: -1 }} />
-          ))}
-          <span style={{ fontSize: 11, color: 'var(--fg-3)', fontWeight: 600 }}>More</span>
+          {isCalories ? (<>
+            <span style={{ fontSize: 11, color: CALORIE_SURPLUS_COLOR, fontWeight: 600 }}>Surplus</span>
+            {[...rampScale(CALORIE_SURPLUS_COLOR, CALORIE_LEVELS).slice(1).reverse(), EMPTY_CELL, ...rampScale(habit.color, CALORIE_LEVELS).slice(1)].map((c, i) => (
+              <span key={i} style={{ width: CELL, height: CELL, borderRadius: 3, background: c, outline: '1px solid rgba(255,255,255,0.045)', outlineOffset: -1 }} />
+            ))}
+            <span style={{ fontSize: 11, color: habit.accent, fontWeight: 600 }}>Deficit</span>
+          </>) : (<>
+            <span style={{ fontSize: 11, color: 'var(--fg-3)', fontWeight: 600 }}>Less</span>
+            {(habit.type === 'binary' ? [EMPTY_CELL, habit.accent] : rampScale(habit.color, habit.levels || 5)).map((c, i) => (
+              <span key={i} style={{ width: CELL, height: CELL, borderRadius: 3, background: c, outline: '1px solid rgba(255,255,255,0.045)', outlineOffset: -1 }} />
+            ))}
+            <span style={{ fontSize: 11, color: 'var(--fg-3)', fontWeight: 600 }}>More</span>
+          </>)}
         </div>
       </div>
 
@@ -901,6 +1010,8 @@ function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCod
         breakdown={codingDaily && codingDaily[hover.key]}
         workouts={whoopWorkouts && whoopWorkouts[hover.key]}
         sleeps={whoopSleep && whoopSleep[hover.key]}
+        cycles={whoopCycles && whoopCycles[hover.key]}
+        intake={intakeDaily && intakeDaily[hover.key]}
         manualOn={!!(fitnessManual && fitnessManual[hover.key])} whoop={whoop} rect={hover.rect} />}
       <AnimatePresence>
         {sel && (
@@ -908,6 +1019,8 @@ function Heatmap({ habit, data, weeks, onSet, codingDaily, onCodingManual, onCod
             breakdown={codingDaily && codingDaily[sel.key]}
             workouts={whoopWorkouts && whoopWorkouts[sel.key]}
             sleeps={whoopSleep && whoopSleep[sel.key]}
+            cycles={whoopCycles && whoopCycles[sel.key]}
+            intake={intakeDaily && intakeDaily[sel.key]}
             manualOn={!!(fitnessManual && fitnessManual[sel.key])}
             autoGreen={whoopWorkouts ? whoopQualifies(whoopWorkouts[sel.key], whoop) : false}
             whoop={whoop}
@@ -1097,11 +1210,12 @@ function rangeLabel(a, b) {
   return `${MONTHS[a.getMonth()]} ${a.getDate()} \u2013 ${right}`;
 }
 
-function DayGlance({ habit, date, entry, future, isToday, exactV }) {
+function DayGlance({ habit, date, entry, future, isToday, exactV, cycles, intake }) {
   const v = entry ? entry.v : 0;
+  const isCalories = habit.source === 'calories';
   const done = habit.type === 'binary' ? !!v : v > 0;
   const bright = habit.type === 'binary' || v >= 4;
-  const bg = future ? 'transparent' : cellColor(habit, entry);
+  const bg = future ? 'transparent' : (isCalories ? calorieCellColor(habit, cycles, intake) : cellColor(habit, entry));
   const note = entry && entry.note ? entry.note : '';
   // Show exact time where we have it, so 6h30m reads 6.5 and the seven circles sum
   // to the week total printed above them rather than appearing to fall short.
@@ -1127,7 +1241,7 @@ function DayGlance({ habit, date, entry, future, isToday, exactV }) {
   );
 }
 
-function WeekBlock({ habit, label, monday, data, today, total, delta, nav, exact }) {
+function WeekBlock({ habit, label, monday, data, today, total, delta, nav, exact, whoopCycles, intakeDaily }) {
   const days = weekDates(monday);
   const accent = habit.accent;
   return (
@@ -1150,7 +1264,8 @@ function WeekBlock({ habit, label, monday, data, today, total, delta, nav, exact
       </div>
       <div style={{ display: 'flex', gap: 7 }}>
         {days.map((d, i) => (
-          <DayGlance key={i} habit={habit} date={d} entry={data[keyOf(d)]} future={d > today} isToday={keyOf(d) === keyOf(today)} exactV={exact ? exact[keyOf(d)] : null} />
+          <DayGlance key={i} habit={habit} date={d} entry={data[keyOf(d)]} future={d > today} isToday={keyOf(d) === keyOf(today)} exactV={exact ? exact[keyOf(d)] : null}
+            cycles={whoopCycles && whoopCycles[keyOf(d)]} intake={intakeDaily && intakeDaily[keyOf(d)]} />
         ))}
       </div>
     </div>
@@ -1169,7 +1284,7 @@ function WeekNavBtn({ icon, onClick, disabled, label }) {
 
 const weekTitle = (weeksAgo) => weeksAgo === 0 ? 'This week' : weeksAgo === 1 ? 'Last week' : `${weeksAgo} weeks ago`;
 
-function WeekReport({ habit, data, today, exact }) {
+function WeekReport({ habit, data, today, exact, whoopCycles, intakeDaily }) {
   const mobile = useIsMobile();
   const [back, setBack] = useState(1);              // left block: how many weeks ago (1 = last week)
   const MAX_BACK = 50;                              // stay inside the 52-week data horizon
@@ -1189,6 +1304,7 @@ function WeekReport({ habit, data, today, exact }) {
       <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>{'Weekly report \u00b7 Mon \u2192 Sun'}</span>
       <div style={{ display: 'flex', flexDirection: mobile ? 'column' : 'row', gap: mobile ? 24 : 40, marginTop: 20, alignItems: 'stretch' }}>
         <WeekBlock habit={habit} label={weekTitle(back)} monday={leftMon} data={data} today={today} total={leftTotal} exact={exact}
+          whoopCycles={whoopCycles} intakeDaily={intakeDaily}
           delta={back > 1 ? <Delta now={leftTotal} base={sum(addDays(leftMon, -7))} /> : null}
           nav={
             <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -1204,6 +1320,7 @@ function WeekReport({ habit, data, today, exact }) {
           } />
         <div style={{ flex: 'none', background: 'var(--surface-line)', ...(mobile ? { height: 1, width: '100%' } : { width: 1, alignSelf: 'stretch' }) }} />
         <WeekBlock habit={habit} label="This week" monday={thisMon} data={data} today={today} total={thisTotal} exact={exact}
+          whoopCycles={whoopCycles} intakeDaily={intakeDaily}
           delta={<Delta now={thisTotal} base={leftTotal} />} />
       </div>
     </Card>
@@ -1310,11 +1427,12 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
   /* One source at a time. This was two booleans that silently cancelled each other;
      a single value makes the exclusivity real instead of a convention, and the old
      codingOn/fitnessOn are derived so every downstream conditional is unchanged. */
-  const startPreset = (initial && ['coding', 'fitness', 'sleep'].includes(initial.source)) ? initial.source : null;
+  const startPreset = (initial && ['coding', 'fitness', 'sleep', 'calories'].includes(initial.source)) ? initial.source : null;
   const [preset, setPreset] = useState(startPreset);
   const codingOn = preset === 'coding';
   const fitnessOn = preset === 'fitness';
   const sleepOn = preset === 'sleep';
+  const caloriesOn = preset === 'calories';
   const [leetUser, setLeetUser] = useState((coding && coding.leetcode_username) || '');
   const [gfgUser, setGfgUser] = useState((coding && coding.gfg_username) || '');
   const [minDur, setMinDur] = useState((whoop && whoop.min_duration_min) || 20);
@@ -1335,6 +1453,10 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
     } else if (next === 'sleep') {
       setType('count'); setLevels(SLEEP_LEVELS); if (!name.trim()) setName('Sleep');
       if (icon === 'target') setIcon('moon'); if (color === '#16EC06') setColor('#A855F7');
+    } else if (next === 'calories') {
+      // Green is already the default — deficit shades of it, surplus is a fixed red.
+      setType('count'); setLevels(CALORIE_LEVELS); if (!name.trim()) setName('Calories');
+      if (icon === 'target') setIcon('apple');
     }
   };
 
@@ -1342,10 +1464,10 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
     if (!canSave) return;
     const form = {
       name: name.trim(),
-      type: codingOn ? 'count' : (fitnessOn ? 'binary' : (sleepOn ? 'count' : type)),
-      // Sleep stores hours but shades them into SLEEP_LEVELS bands.
-      levels: codingOn ? 5 : (fitnessOn ? 1 : (sleepOn ? SLEEP_LEVELS : (type === 'count' ? levels : 1))),
-      unit: codingOn ? 'solves' : (fitnessOn ? 'times' : (sleepOn ? 'hours' : (unit.trim() || 'times'))),
+      type: codingOn ? 'count' : (fitnessOn ? 'binary' : ((sleepOn || caloriesOn) ? 'count' : type)),
+      // Sleep and Calories store a real quantity but shade it into band-based levels.
+      levels: codingOn ? 5 : (fitnessOn ? 1 : (sleepOn ? SLEEP_LEVELS : (caloriesOn ? CALORIE_LEVELS : (type === 'count' ? levels : 1)))),
+      unit: codingOn ? 'solves' : (fitnessOn ? 'times' : (sleepOn ? 'hours' : (caloriesOn ? 'kcal' : (unit.trim() || 'times')))),
       icon, color,
       source: preset,
       fitness_kind: fitnessOn ? 'workout' : null,
@@ -1389,6 +1511,7 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
               { key: 'coding', icon: 'code', label: 'Coding', sub: 'LeetCode · GFG' },
               { key: 'fitness', icon: 'dumbbell', label: 'Workouts', sub: 'WHOOP' },
               { key: 'sleep', icon: 'moon', label: 'Sleep', sub: 'WHOOP' },
+              { key: 'calories', icon: 'apple', label: 'Calories', sub: 'WHOOP · Intake' },
             ].map((p) => {
               const on = preset === p.key;
               const accent = peakColor(hueOf(color));
@@ -1455,6 +1578,19 @@ function HabitModal({ initial, coding, whoop, syncing, onSave, onDelete, onDisco
                 <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 6, lineHeight: 1.5 }}>
                   A day counts when one workout runs at least {minDur} minutes.{minStrain > 0 ? ` Sessions WHOOP could only file under its generic "Activity" label must also reach strain ${minStrain} — a sport you named (weightlifting, swimming, …) counts on duration alone.` : ''} Walking never counts, at any length. Changing either re-checks your whole history instantly.
                 </div>
+              </div>
+            </div>
+          )}
+
+          {caloriesOn && (
+            <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <WhoopStatus whoop={whoop} color={color} />
+              <div style={{ fontSize: 12, color: 'var(--fg-3)', lineHeight: 1.5 }}>
+                Combines WHOOP's daily calorie burn with the food intake your AI assistant logs.
+                A day only fills in once <b>both</b> exist for it — no guessing on a partial day.
+                Shaded in <b>deficit</b> ({color === '#16EC06' ? 'green' : 'your habit colour'}) or{' '}
+                <b>surplus</b> (red), by how large the gap is. Burn refreshes nightly with WHOOP;
+                intake arrives whenever your assistant syncs it.
               </div>
             </div>
           )}
@@ -1684,6 +1820,8 @@ function App({ userId, email }) {
   const [fitnessManual, setFitnessManual] = useState({}); // { 'YYYY-MM-DD': true }
   const [whoopWorkouts, setWhoopWorkouts] = useState({}); // { 'YYYY-MM-DD': [ {...} ] }
   const [whoopSleep, setWhoopSleep] = useState({});          // { 'YYYY-MM-DD': [ {...} ] }
+  const [whoopCycles, setWhoopCycles] = useState({});         // { 'YYYY-MM-DD': [ {kilojoule,strain} ] }
+  const [intakeDaily, setIntakeDaily] = useState({});         // { 'YYYY-MM-DD': {total_kcal,meals,notes} }
 
   const habit = habits.find((h) => h.id === activeId) || null;
   const data = habit ? (store[habit.id] || {}) : {};
@@ -1700,6 +1838,8 @@ function App({ userId, email }) {
         setHabits(hs); setStore(s); setSettings(st); setCoding(cp); setCodingDaily(cd);
         setWhoop(wc); setFitnessManual(fm); setWhoopWorkouts(ww);
         fetchWhoopSleep().then(setWhoopSleep);
+        fetchWhoopCycles().then(setWhoopCycles);
+        fetchIntakeDaily().then(setIntakeDaily);
         applyPrimaryColor(st.primary_color); setSynced(true);
       });
     const eChannel = sb.channel('habit_entries_rt')
@@ -1735,9 +1875,17 @@ function App({ userId, email }) {
       .on('postgres_changes', { event: '*', schema: 'public', table: FITNESS_MANUAL_TABLE },
         () => { fetchFitnessManual().then((m) => { if (mounted) setFitnessManual(m); }); })
       .subscribe();
+    const wcyChannel = sb.channel('whoop_cycles_rt')
+      .on('postgres_changes', { event: '*', schema: 'public', table: WHOOP_CYCLES_TABLE },
+        () => { fetchWhoopCycles().then((c) => { if (mounted) setWhoopCycles(c); }); })
+      .subscribe();
+    const idChannel = sb.channel('intake_daily_rt')
+      .on('postgres_changes', { event: '*', schema: 'public', table: INTAKE_DAILY_TABLE },
+        () => { fetchIntakeDaily().then((i) => { if (mounted) setIntakeDaily(i); }); })
+      .subscribe();
     return () => {
       mounted = false;
-      [eChannel, hChannel, sChannel, cChannel, cdChannel, wChannel, wwChannel, fmChannel]
+      [eChannel, hChannel, sChannel, cChannel, cdChannel, wChannel, wwChannel, fmChannel, wcyChannel, idChannel]
         .forEach((ch) => sb.removeChannel(ch));
     };
   }, []);
@@ -1895,6 +2043,7 @@ function App({ userId, email }) {
       const id = form.source === 'coding' ? `coding-${userId}`
                : form.source === 'fitness' ? `fitness-${userId}`
                : form.source === 'sleep' ? `sleep-${userId}`
+               : form.source === 'calories' ? `calories-${userId}`
                : slugify(form.name);
       const sort_order = habits.length ? Math.max(...habits.map((h) => h.sort_order)) + 1 : 0;
       setHabits((prev) => [...prev.filter((h) => h.id !== id), rowToHabit({ id, ...form, sort_order })]);
@@ -1921,6 +2070,14 @@ function App({ userId, email }) {
         repairSleepDays().then(() => {
           Promise.all([fetchStore(), fetchWhoopConnection()])
             .then(([s, wc]) => { setStore(s); setWhoop(wc); });
+        });
+      }
+      if (form.source === 'calories') {
+        // Same idea: whoop_cycles and intake_daily rows may already both exist for
+        // overlapping days before this habit existed to materialize them into.
+        repairCalorieDays().then(() => {
+          Promise.all([fetchStore(), fetchWhoopCycles(), fetchIntakeDaily()])
+            .then(([s, wcy, id]) => { setStore(s); setWhoopCycles(wcy); setIntakeDaily(id); });
         });
       }
     });
@@ -2045,6 +2202,8 @@ function App({ userId, email }) {
           codingDaily={habit.source === 'coding' ? codingDaily : null} onCodingManual={onCodingManual} onCodingNote={onCodingNote}
           whoopWorkouts={habit.source === 'fitness' ? whoopWorkouts : null}
           whoopSleep={habit.source === 'sleep' ? whoopSleep : null}
+          whoopCycles={habit.source === 'calories' ? whoopCycles : null}
+          intakeDaily={habit.source === 'calories' ? intakeDaily : null}
           fitnessManual={habit.source === 'fitness' ? fitnessManual : null}
           whoop={whoop} onFitnessManual={onFitnessManual} />
         <div style={{ fontSize: 12, color: 'var(--fg-3)', marginTop: 14, display: 'flex', alignItems: 'center', gap: 7 }}>
@@ -2056,7 +2215,7 @@ function App({ userId, email }) {
       </Card>
 
       {/* two-week glance — directly under heatmap */}
-      <WeekReport habit={habit} data={data} today={today} exact={exactValues} />
+      <WeekReport habit={habit} data={data} today={today} exact={exactValues} whoopCycles={whoopCycles} intakeDaily={intakeDaily} />
 
       {/* stats */}
       <div style={{ marginTop: 16 }}>
