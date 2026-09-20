@@ -35,8 +35,11 @@ async function sbFetch(path, options = {}) {
 module.exports = async (req, res) => {
   res.setHeader('Content-Type', 'application/json');
 
+  // Header is preferred; ?token= is a fallback for callers that can't set custom
+  // headers (e.g. a fetch tool without header support). Same secret either way.
   const auth = req.headers.authorization || '';
-  if (!RELAY_TOKEN || auth !== `Bearer ${RELAY_TOKEN}`) {
+  const tokenOk = RELAY_TOKEN && (auth === `Bearer ${RELAY_TOKEN}` || req.query.token === RELAY_TOKEN);
+  if (!tokenOk) {
     res.status(401).json({ error: 'unauthorized' });
     return;
   }
