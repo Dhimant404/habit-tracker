@@ -1,5 +1,7 @@
 // Read-only relay: exposes stored Whoop data (synced by the existing backend) to a
 // server-to-server caller. Never writes anything. Day boundaries are Asia/Kolkata (fixed +05:30).
+// active_kcal has no WHOOP equivalent (workout burn is already folded into cycle.kilojoule,
+// not tracked separately) and is always null — see total_kcal.
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -69,13 +71,16 @@ module.exports = async (req, res) => {
   const rangeEndUtc = new Date(`${endDate}T23:59:59.999+05:30`).toISOString();
 
   try {
-    const [workouts, sleeps, conn] = await Promise.all([
+    const [workouts, sleeps, cycles, conn] = await Promise.all([
       sbSelect('whoop_workouts',
         `user_id=eq.${USER_ID}&start_at=gte.${rangeStartUtc}&start_at=lte.${rangeEndUtc}` +
         `&select=start_at,end_at,sport_name,duration_min,strain&order=start_at.asc`),
       sbSelect('whoop_sleep',
         `user_id=eq.${USER_ID}&end_at=gte.${rangeStartUtc}&end_at=lte.${rangeEndUtc}` +
         `&select=start_at,end_at,nap,total_sleep_min,performance_pct&order=end_at.asc`),
+      sbSelect('whoop_cycles',
+        `user_id=eq.${USER_ID}&start_at=gte.${rangeStartUtc}&start_at=lte.${rangeEndUtc}` +
+        `&select=start_at,kilojoule,strain&order=start_at.asc`),
       sbSelect('whoop_connections', `user_id=eq.${USER_ID}&select=last_synced_at`),
     ]);
 
@@ -91,15 +96,27 @@ module.exports = async (req, res) => {
       const day = istDateStr(s.end_at); // night is filed on the wake-up day
       (sleepByDay[day] = sleepByDay[day] || []).push(s);
     }
+    const cyclesByDay = {};
+    for (const c of cycles) {
+      const day = istDateStr(c.start_at);
+      (cyclesByDay[day] = cyclesByDay[day] || []).push(c);
+    }
 
     const days = [];
     for (let day = startDate; day <= endDate; day = addDaysStr(day, 1)) {
       const dayWorkouts = workoutsByDay[day] || [];
       const daySleeps = sleepByDay[day] || [];
+      const dayCycles = cyclesByDay[day] || [];
       const totalSleepMin = daySleeps.reduce((a, s) => a + (Number(s.total_sleep_min) || 0), 0);
       // "Main" sleep = the longest record for the day (naps are shorter and summed separately).
       const mainSleep = daySleeps.length
         ? daySleeps.reduce((a, b) => (Number(b.total_sleep_min) || 0) > (Number(a.total_sleep_min) || 0) ? b : a)
+        : null;
+      // cycle.kilojoule is WHOOP's single daily total-calories figure (BMR + all activity,
+      // workout burn already folded in) — this is what the app's Trends > Calories shows.
+      const totalKj = dayCycles.reduce((a, c) => a + (Number(c.kilojoule) || 0), 0);
+      const dayStrain = dayCycles.length
+        ? Math.max(...dayCycles.map((c) => (c.strain != null ? Number(c.strain) : -Infinity)))
         : null;
 
       days.push({
@@ -109,13 +126,13 @@ module.exports = async (req, res) => {
         resting_hr: null,
         hrv_ms: null,
         spo2: null,
-        day_strain: null,
+        day_strain: dayStrain != null && dayStrain > -Infinity ? dayStrain : null,
         sleep_hours: daySleeps.length ? Math.round((totalSleepMin / 60) * 100) / 100 : null,
         sleep_score: mainSleep && mainSleep.performance_pct != null ? Number(mainSleep.performance_pct) : null,
         sleep_start: mainSleep ? toIstIso(mainSleep.start_at) : null,
         sleep_end: mainSleep ? toIstIso(mainSleep.end_at) : null,
         active_kcal: null,
-        total_kcal: null,
+        total_kcal: dayCycles.length && totalKj > 0 ? Math.round(totalKj / 4.184) : null,
         workouts: dayWorkouts.map((w) => ({
           type: w.sport_name,
           start: toIstIso(w.start_at),
