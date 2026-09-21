@@ -47,7 +47,9 @@ module.exports = async (req, res) => {
   try {
     if (req.method === 'POST') {
       const body = req.body && typeof req.body === 'object' ? req.body : {};
-      const { date, meals, total_kcal: totalKcal, notes } = body;
+      // Unknown fields (and per-meal macro fields, which live inside the meals JSON
+      // as-is) pass through untouched — only these named fields are validated.
+      const { date, meals, total_kcal: totalKcal, notes, protein_g: proteinG, carbs_g: carbsG, fat_g: fatG } = body;
 
       if (!DATE_RE.test(date || '')) {
         res.status(400).json({ error: 'invalid_input', message: 'date must be YYYY-MM-DD' });
@@ -61,12 +63,28 @@ module.exports = async (req, res) => {
         res.status(400).json({ error: 'invalid_input', message: 'total_kcal must be a number >= 0' });
         return;
       }
+      // Optional day-total macros: absent -> null, present -> must be a valid number >= 0.
+      const macro = (v, name) => {
+        if (v === undefined || v === null) return null;
+        if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) throw new Error(`${name} must be a number >= 0`);
+        return v;
+      };
+      let protein, carbs, fat;
+      try {
+        protein = macro(proteinG, 'protein_g');
+        carbs = macro(carbsG, 'carbs_g');
+        fat = macro(fatG, 'fat_g');
+      } catch (e) {
+        res.status(400).json({ error: 'invalid_input', message: e.message });
+        return;
+      }
 
       const row = {
         user_id: USER_ID,
         day: date,
         meals,
         total_kcal: totalKcal,
+        protein_g: protein, carbs_g: carbs, fat_g: fat,
         notes: typeof notes === 'string' ? notes : null,
         updated_at: new Date().toISOString(),
       };
@@ -77,6 +95,7 @@ module.exports = async (req, res) => {
       });
       res.status(200).json({
         date: saved.day, meals: saved.meals, total_kcal: saved.total_kcal,
+        protein_g: saved.protein_g, carbs_g: saved.carbs_g, fat_g: saved.fat_g,
         notes: saved.notes, updated_at: saved.updated_at,
       });
       return;
@@ -96,10 +115,11 @@ module.exports = async (req, res) => {
 
       const rows = await sbFetch(
         `intake_daily?user_id=eq.${USER_ID}&day=gte.${startDate}&day=lte.${endDate}` +
-        `&select=day,meals,total_kcal,notes,updated_at&order=day.asc`,
+        `&select=day,meals,total_kcal,protein_g,carbs_g,fat_g,notes,updated_at&order=day.asc`,
       );
       res.status(200).json(rows.map((r) => ({
         date: r.day, meals: r.meals, total_kcal: r.total_kcal,
+        protein_g: r.protein_g, carbs_g: r.carbs_g, fat_g: r.fat_g,
         notes: r.notes, updated_at: r.updated_at,
       })));
       return;
