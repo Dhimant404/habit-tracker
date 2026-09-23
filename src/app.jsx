@@ -4,7 +4,7 @@
 const { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect } = React;
 
 /* framer-motion globals — bound in boot() once the ESM module has loaded */
-let motion, AnimatePresence, MotionConfig, useMotionValue, animate;
+let motion, AnimatePresence, MotionConfig, useMotionValue, animate, Reorder, useDragControls;
 
 /* ============================================================
    MOTION — shared variants, easing, and an animated number
@@ -607,6 +607,11 @@ function calorieCellColor(habit, cycles, intake) {
   const band = calorieBand(Math.abs(d.deficit));
   return rampColor(d.deficit >= 0 ? habit.color : CALORIE_SURPLUS_COLOR, CALORIE_LEVELS, band);
 }
+/* How a signed net (burn − eaten, + = deficit) reads on screen: the gap, never kcal eaten. */
+function calorieNet(habit, net) {
+  const deficit = net >= 0;
+  return { n: Math.round(Math.abs(net)), word: deficit ? 'deficit' : 'surplus', color: deficit ? habit.accent : CALORIE_SURPLUS_COLOR };
+}
 function calorieIsMax(cycles, intake) {
   const d = calorieDeficit(cycles, intake);
   return !!d && d.deficit >= 0 && calorieBand(Math.abs(d.deficit)) >= CALORIE_LEVELS;
@@ -641,7 +646,9 @@ function Tooltip({ habit, date, entry, breakdown, workouts, sleeps, cycles, inta
   const bd = breakdown || { leetcode: 0, gfg: 0, manual: 0 };
   const wk = workouts || [];
   const cal = isCalories ? calorieDeficit(cycles, intake) : null;
-  const valTxt = habit.type === 'binary'
+  const valTxt = isCalories
+    ? (cal ? `${Math.round(Math.abs(cal.deficit))} kcal ${cal.deficit >= 0 ? 'deficit' : 'surplus'}` : 'Not tracked')
+    : habit.type === 'binary'
     ? (val ? 'Done' : 'Not done')
     : `${val} ${unitLabel(habit, val)}`;
   // Portal to <body> so its fixed coordinates are viewport-relative, not
@@ -655,7 +662,7 @@ function Tooltip({ habit, date, entry, breakdown, workouts, sleeps, cycles, inta
       <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>{fmtLong(date)}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 5 }}>
         <span style={{ width: 9, height: 9, borderRadius: 2, background: isCalories ? calorieCellColor(habit, cycles, intake) : cellColor(habit, entry), flex: 'none' }} />
-        <span className="whoop-num" style={{ fontSize: 15, color: val ? '#fff' : 'var(--fg-3)' }}>{valTxt}</span>
+        <span className="whoop-num" style={{ fontSize: 15, color: isCalories ? (cal ? calorieNet(habit, cal.deficit).color : 'var(--fg-3)') : (val ? '#fff' : 'var(--fg-3)') }}>{valTxt}</span>
       </div>
       {isCalories ? (
         <div style={{ marginTop: 7, display: 'flex', flexDirection: 'column', gap: 3, fontSize: 12, color: 'var(--fg-2)' }}>
@@ -1046,7 +1053,17 @@ function valOf(habit, entry) {
    stored value is a rounded view of something finer — every other habit's value IS the
    exact quantity — so this returns null for them and the normal path is untouched.
    Built once per sleep-data change and looked up by key, so aggregating stays O(days). */
-function exactDayValues(habit, sleepByDay) {
+function exactDayValues(habit, sleepByDay, cyclesByDay, intakeByDay) {
+  // Calories: the day's value is the signed net (burn − eaten; + = deficit), never kcal
+  // eaten. Days missing either side are absent and count as 0 (see dayValue).
+  if (habit && habit.source === 'calories') {
+    const out = {};
+    for (const day in intakeByDay || {}) {
+      const d = calorieDeficit(cyclesByDay && cyclesByDay[day], intakeByDay[day]);
+      if (d) out[day] = d.deficit;
+    }
+    return out;
+  }
   if (!habit || habit.source !== 'sleep' || !sleepByDay) return null;
   const out = {};
   for (const day in sleepByDay) {
@@ -1063,13 +1080,15 @@ function fmtTotal(n) {
   return Number.isInteger(r) ? String(r) : r.toFixed(1);
 }
 
+/* Exact value where we have it; the stored value otherwise (and for every other habit).
+   Calories never falls back: its stored value is kcal eaten, which isn't the net. */
+function dayValue(habit, data, exact, key) {
+  if (exact) { const e = exact[key]; if (e != null) return e; }
+  return habit.source === 'calories' ? 0 : valOf(habit, data[key]);
+}
+
 function computeStats(habit, data, weeks, today, exact) {
-  // Exact time where we have it; the stored value otherwise (and for every non-sleep habit).
-  const val = (d) => {
-    const key = keyOf(d);
-    if (exact) { const e = exact[key]; if (e != null) return e; }
-    return valOf(habit, data[key]);
-  };
+  const val = (d) => dayValue(habit, data, exact, keyOf(d));
   const weekTotal = (offset) => {
     const col = weeks[52 - offset];
     if (!col) return 0;
@@ -1128,10 +1147,14 @@ function StatCard({ label, value, unit, accent = 'var(--fg-1)', footer }) {
 
 /* 8-week trend bars */
 function TrendCard({ habit, stats }) {
+  const isCal = habit.source === 'calories';
   const data = stats.last8;
-  const max = Math.max(1, ...data);
-  const avg = data.reduce((a, b) => a + b, 0) / data.length;
-  const accent = habit.accent;
+  // Calories weeks are signed nets: bar height is the gap, colour is the direction.
+  const mag = isCal ? data.map(Math.abs) : data;
+  const max = Math.max(1, ...mag);
+  const avgSigned = data.reduce((a, b) => a + b, 0) / data.length;
+  const avg = isCal ? Math.abs(avgSigned) : avgSigned;
+  const accent = isCal ? calorieNet(habit, avgSigned).color : habit.accent;
   const labels = ['7w', '6w', '5w', '4w', '3w', '2w', 'Last', 'This'];
   const [hi, setHi] = useState(null);
   const BAR_MAX = 88, LABEL_ROW = 22;   // px; avg line offset = label row + bar height fraction
@@ -1140,20 +1163,22 @@ function TrendCard({ habit, stats }) {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)' }}>Last 8 weeks</span>
         <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-3)', whiteSpace: 'nowrap' }}>
-          avg <span className="whoop-num" style={{ color: 'var(--fg-2)', fontSize: 11.5 }}>{Math.round(avg * 10) / 10}</span> {habit.unit} / wk
+          avg <span className="whoop-num" style={{ color: 'var(--fg-2)', fontSize: 11.5 }}>{Math.round(avg * 10) / 10}</span> {isCal ? `kcal ${calorieNet(habit, avgSigned).word}` : habit.unit} / wk
         </span>
       </div>
       <div style={{ position: 'relative', display: 'flex', alignItems: 'flex-end', gap: 12, height: 118 }}
         onMouseLeave={() => setHi(null)}>
         {/* dashed 8-week average line */}
         <div style={{ position: 'absolute', left: 0, right: 0, bottom: LABEL_ROW + Math.max(3, (avg / max) * BAR_MAX), borderTop: `1.5px dashed ${withAlpha(accent, 0.4)}`, pointerEvents: 'none' }} />
-        {data.map((v, i) => {
+        {data.map((raw, i) => {
+          const v = isCal ? Math.abs(raw) : raw;
+          const accent = isCal ? calorieNet(habit, raw).color : habit.accent;
           const isThis = i === data.length - 1;
           const lit = hi === i || (hi === null && isThis);
           return (
             <div key={i} onMouseEnter={() => setHi(i)}
               style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, cursor: 'default' }}>
-              <span className="whoop-num" style={{ fontSize: 12, color: lit ? accent : 'var(--fg-3)', fontWeight: 700, textShadow: lit ? `0 0 12px ${withAlpha(accent, 0.5)}` : 'none', transition: 'color .15s' }}>{fmtTotal(v)}</span>
+              <span className="whoop-num" style={{ fontSize: 12, color: lit ? accent : 'var(--fg-3)', fontWeight: 700, textShadow: lit ? `0 0 12px ${withAlpha(accent, 0.5)}` : 'none', transition: 'color .15s' }}>{isCal ? Math.round(v) : fmtTotal(v)}</span>
               <motion.div key={habit.id + '-' + i}
                 initial={{ scaleY: 0 }} animate={{ scaleY: 1 }}
                 transition={{ delay: 0.15 + i * 0.055, duration: 0.5, ease: [0.22, 0.9, 0.3, 1] }}
@@ -1184,6 +1209,23 @@ function StatsStrip({ habit, stats }) {
   const avgRounded = habit.type === 'binary' ? stats.avg4.toFixed(1)
     : habit.source === 'sleep' ? fmtTotal(stats.avg4)   // keep other count habits on whole numbers
     : Math.round(stats.avg4);
+  if (habit.source === 'calories') {
+    // Net burn − eaten, shown as the gap and coloured by direction. % deltas are
+    // meaningless once a total can flip sign, so footers state the comparison instead.
+    const wk = calorieNet(habit, stats.thisWeek), last = calorieNet(habit, stats.lastWeek), avg = calorieNet(habit, stats.avg4);
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: mobile ? '1fr' : '1.1fr 1fr 1fr 1.6fr', gap: mobile ? 12 : 16, alignItems: 'stretch' }}>
+        <StatCard label="This week" value={wk.n} unit={`kcal ${wk.word}`} accent={wk.color}
+          footer={<><span style={{ color: 'var(--fg-3)' }}>last week</span><span className="whoop-num" style={{ color: last.color, fontWeight: 700 }}>{last.n} {last.word}</span></>} />
+        <StatCard label="4-week avg" value={avg.n} unit={`kcal ${avg.word}`} accent={avg.color}
+          footer={<span style={{ color: 'var(--fg-3)' }}>net per week, burned {'\u2212'} eaten</span>} />
+        <StatCard label="Deficit streak" value={stats.cur} unit={stats.cur === 1 ? 'day' : 'days'}
+          accent={stats.cur > 0 ? accent : 'var(--fg-1)'}
+          footer={<><Icon name="flame" size={14} color="var(--fg-3)" /><span style={{ color: 'var(--fg-3)' }}>best {stats.longest} days</span></>} />
+        <TrendCard habit={habit} stats={stats} />
+      </div>
+    );
+  }
   return (
     <div style={{ display: 'grid', gridTemplateColumns: mobile ? '1fr' : '1.1fr 1fr 1fr 1.6fr', gap: mobile ? 12 : 16, alignItems: 'stretch' }}>
       <StatCard
@@ -1210,7 +1252,7 @@ function rangeLabel(a, b) {
   return `${MONTHS[a.getMonth()]} ${a.getDate()} \u2013 ${right}`;
 }
 
-function DayGlance({ habit, date, entry, future, isToday, exactV, cycles, intake }) {
+function DayGlance({ habit, date, entry, future, isToday, exactV, cycles, intake, onHover }) {
   const v = entry ? entry.v : 0;
   const isCalories = habit.source === 'calories';
   const done = habit.type === 'binary' ? !!v : v > 0;
@@ -1219,22 +1261,31 @@ function DayGlance({ habit, date, entry, future, isToday, exactV, cycles, intake
   const note = entry && entry.note ? entry.note : '';
   // Show exact time where we have it, so 6h30m reads 6.5 and the seven circles sum
   // to the week total printed above them rather than appearing to fall short.
-  const shown = exactV != null ? fmtTotal(exactV) : v;
-  const title = future ? '' : `${fmtLong(date)} \u00b7 ${habit.type === 'binary' ? (done ? 'done' : 'rest') : shown + ' ' + habit.unit}${note ? ' \u00b7 ' + note : ''}`;
+  // Calories shows the gap (surplus/deficit), never kcal eaten; the cell colour says which.
+  const cal = isCalories && exactV != null ? calorieNet(habit, exactV) : null;
+  const shown = isCalories ? (cal ? cal.n : '—') : exactV != null ? fmtTotal(exactV) : v;
+  const lit = isCalories ? !!cal : !!v;
+  const darkText = isCalories ? (cal && calorieBand(cal.n) >= 3) : bright;
+  // Calories gets the rich hover tooltip (burned / eaten / gap) instead of a native title.
+  const title = future || isCalories ? '' : `${fmtLong(date)} · ${habit.type === 'binary' ? (done ? 'done' : 'rest') : shown + ' ' + habit.unit}${note ? ' · ' + note : ''}`;
+  const hoverProps = isCalories && !future && onHover ? {
+    onMouseEnter: (e) => onHover({ date, rect: e.currentTarget.getBoundingClientRect() }),
+    onMouseLeave: () => onHover(null),
+  } : {};
   return (
     <div title={title} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, minWidth: 0 }}>
       <span style={{ fontSize: 11, fontWeight: 700, color: isToday ? 'var(--teal)' : 'var(--fg-3)' }}>{WD_LETTERS[(date.getDay() + 6) % 7]}</span>
-      <div style={{
+      <div {...hoverProps} style={{
         width: '100%', maxWidth: 44, aspectRatio: '1', borderRadius: 12,
         background: bg,
         border: future ? '1.5px dashed var(--surface-line-strong)' : '1px solid rgba(255,255,255,0.05)',
         outline: isToday ? '2px solid var(--teal)' : 'none', outlineOffset: 2,
-        boxShadow: done && bright && !future ? `0 0 12px ${withAlpha(bg, 0.4)}` : 'none',
+        boxShadow: done && bright && !future && !isCalories ? `0 0 12px ${withAlpha(bg, 0.4)}` : 'none',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
         {habit.type === 'binary'
           ? (done && <Icon name="check" size={20} color="#04261a" stroke={2.4} />)
-          : (!future && <span className="whoop-num" style={{ fontSize: shown.toString().length > 2 ? 15 : 18, color: v ? (bright ? '#04261a' : '#fff') : 'var(--fg-disabled)' }}>{shown}</span>)}
+          : (!future && <span className="whoop-num" style={{ fontSize: shown.toString().length > 2 ? 15 : 18, color: lit ? (darkText ? '#04261a' : '#fff') : 'var(--fg-disabled)' }}>{shown}</span>)}
       </div>
       <span style={{ fontSize: 10, fontWeight: 600, color: isToday ? 'var(--fg-2)' : 'var(--fg-3)' }}>{date.getDate()}</span>
     </div>
@@ -1244,6 +1295,8 @@ function DayGlance({ habit, date, entry, future, isToday, exactV, cycles, intake
 function WeekBlock({ habit, label, monday, data, today, total, delta, nav, exact, whoopCycles, intakeDaily }) {
   const days = weekDates(monday);
   const accent = habit.accent;
+  const [hover, setHover] = useState(null); // calories only: { date, rect }
+  const net = habit.source === 'calories' ? calorieNet(habit, total) : null;
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12, marginBottom: 16 }}>
@@ -1257,17 +1310,19 @@ function WeekBlock({ habit, label, monday, data, today, total, delta, nav, exact
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flex: 'none' }}>
           {delta}
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 5 }}>
-            <span className="whoop-num" style={{ fontSize: 30, lineHeight: 1, color: accent }}>{fmtTotal(total)}</span>
-            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-3)' }}>{habit.unit}</span>
+            <span className="whoop-num" style={{ fontSize: 30, lineHeight: 1, color: net ? net.color : accent }}>{net ? net.n : fmtTotal(total)}</span>
+            <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-3)' }}>{net ? `kcal ${net.word}` : habit.unit}</span>
           </div>
         </div>
       </div>
       <div style={{ display: 'flex', gap: 7 }}>
         {days.map((d, i) => (
           <DayGlance key={i} habit={habit} date={d} entry={data[keyOf(d)]} future={d > today} isToday={keyOf(d) === keyOf(today)} exactV={exact ? exact[keyOf(d)] : null}
-            cycles={whoopCycles && whoopCycles[keyOf(d)]} intake={intakeDaily && intakeDaily[keyOf(d)]} />
+            cycles={whoopCycles && whoopCycles[keyOf(d)]} intake={intakeDaily && intakeDaily[keyOf(d)]} onHover={setHover} />
         ))}
       </div>
+      {hover && <Tooltip habit={habit} date={hover.date} entry={data[keyOf(hover.date)]}
+        cycles={whoopCycles && whoopCycles[keyOf(hover.date)]} intake={intakeDaily && intakeDaily[keyOf(hover.date)]} rect={hover.rect} />}
     </div>
   );
 }
@@ -1291,12 +1346,8 @@ function WeekReport({ habit, data, today, exact, whoopCycles, intakeDaily }) {
   useEffect(() => { setBack(1); }, [habit.id]);
   const thisMon = mondayOf(today);
   const leftMon = addDays(thisMon, -7 * back);
-  const sum = (mon) => weekDates(mon).reduce((s, d) => {
-    if (d > today) return s;
-    const key = keyOf(d);
-    const e = exact && exact[key];
-    return s + (e != null ? e : valOf(habit, data[key]));
-  }, 0);
+  const isCal = habit.source === 'calories';
+  const sum = (mon) => weekDates(mon).reduce((s, d) => (d > today ? s : s + dayValue(habit, data, exact, keyOf(d))), 0);
   const leftTotal = sum(leftMon);
   const thisTotal = sum(thisMon);
   return (
@@ -1305,7 +1356,7 @@ function WeekReport({ habit, data, today, exact, whoopCycles, intakeDaily }) {
       <div style={{ display: 'flex', flexDirection: mobile ? 'column' : 'row', gap: mobile ? 24 : 40, marginTop: 20, alignItems: 'stretch' }}>
         <WeekBlock habit={habit} label={weekTitle(back)} monday={leftMon} data={data} today={today} total={leftTotal} exact={exact}
           whoopCycles={whoopCycles} intakeDaily={intakeDaily}
-          delta={back > 1 ? <Delta now={leftTotal} base={sum(addDays(leftMon, -7))} /> : null}
+          delta={back > 1 && !isCal ? <Delta now={leftTotal} base={sum(addDays(leftMon, -7))} /> : null}
           nav={
             <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
               <WeekNavBtn icon="chevron-left" label="Earlier week" disabled={back >= MAX_BACK} onClick={() => setBack((b) => Math.min(MAX_BACK, b + 1))} />
@@ -1321,7 +1372,7 @@ function WeekReport({ habit, data, today, exact, whoopCycles, intakeDaily }) {
         <div style={{ flex: 'none', background: 'var(--surface-line)', ...(mobile ? { height: 1, width: '100%' } : { width: 1, alignSelf: 'stretch' }) }} />
         <WeekBlock habit={habit} label="This week" monday={thisMon} data={data} today={today} total={thisTotal} exact={exact}
           whoopCycles={whoopCycles} intakeDaily={intakeDaily}
-          delta={<Delta now={thisTotal} base={leftTotal} />} />
+          delta={isCal ? null : <Delta now={thisTotal} base={leftTotal} />} />
       </div>
     </Card>
   );
@@ -1781,10 +1832,47 @@ function SettingsModal({ settings, email, whoop, whoopHabits = [], onConnectWhoo
   );
 }
 
-function Tab({ habit, active, onClick }) {
+const LONG_PRESS_MS = 250; // touch: hold this long to pick a tab up (a swipe still scrolls the rail)
+
+function Tab({ habit, active, onClick, onDragEnd, onMove }) {
   const [h, setH] = useState(false);
+  const controls = useDragControls();
+  const btn = useRef(null);
+  const press = useRef(null);      // pending touch long-press: { timer, x, y }
+  const dragging = useRef(false);
+  const dragged = useRef(false);   // swallow the click that follows a drop
+
+  const cancelPress = () => { if (press.current) { clearTimeout(press.current.timer); press.current = null; } };
+  const onPointerDown = (e) => {
+    dragged.current = false;
+    if (e.pointerType === 'mouse') { controls.start(e); return; } // framer waits for ~3px of travel, so a click stays a click
+    const ev = e.nativeEvent;
+    press.current = { x: e.clientX, y: e.clientY, timer: setTimeout(() => { press.current = null; dragging.current = true; controls.start(ev); }, LONG_PRESS_MS) };
+  };
+  const onPointerMove = (e) => {
+    if (press.current && Math.hypot(e.clientX - press.current.x, e.clientY - press.current.y) > 8) cancelPress(); // it's a scroll
+  };
+  // Once a touch drag is live, stop the rail from also scrolling under the finger.
+  // Must be a non-passive native listener; React's touch handlers are passive.
+  useEffect(() => {
+    const el = btn.current;
+    const block = (e) => { if (dragging.current) e.preventDefault(); };
+    el.addEventListener('touchmove', block, { passive: false });
+    return () => el.removeEventListener('touchmove', block);
+  }, []);
+  useEffect(() => cancelPress, []);
+
   return (
-    <button onClick={onClick}
+    <Reorder.Item value={habit} as="div" dragListener={false} dragControls={controls}
+      onDragStart={() => { dragged.current = true; }}
+      onDragEnd={() => { dragging.current = false; onDragEnd(); }}
+      whileDrag={{ scale: 1.04, zIndex: 2 }}
+      style={{ position: 'relative', flex: 'none', borderRadius: 999 }}>
+    <button ref={btn} onClick={() => { if (!dragged.current) onClick(); }}
+      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={cancelPress} onPointerCancel={() => { cancelPress(); dragging.current = false; }}
+      onContextMenu={(e) => e.preventDefault()}
+      onKeyDown={(e) => { if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) { e.preventDefault(); onMove(e.key === 'ArrowLeft' ? -1 : 1); } }}
+      title="Drag to reorder (hold on touch)"
       onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
       style={{
         position: 'relative', flex: 'none', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 9, padding: '10px 18px', borderRadius: 999,
@@ -1792,6 +1880,7 @@ function Tab({ habit, active, onClick }) {
         background: !active && h ? 'var(--surface-2)' : 'transparent',
         color: active ? '#fff' : 'var(--fg-2)',
         fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 13, letterSpacing: '.08em', textTransform: 'uppercase',
+        touchAction: 'pan-x', userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none',
       }}>
       {active && (
         <motion.div layoutId="tabPill" transition={SPRING}
@@ -1800,6 +1889,7 @@ function Tab({ habit, active, onClick }) {
       <span style={{ position: 'relative', zIndex: 1, width: 9, height: 9, borderRadius: 3, background: habit.accent, flex: 'none', boxShadow: active ? `0 0 8px ${habit.accent}` : 'none' }} />
       <span style={{ position: 'relative', zIndex: 1 }}>{habit.name}</span>
     </button>
+    </Reorder.Item>
   );
 }
 
@@ -1825,7 +1915,7 @@ function App({ userId, email }) {
 
   const habit = habits.find((h) => h.id === activeId) || null;
   const data = habit ? (store[habit.id] || {}) : {};
-  const exactValues = useMemo(() => exactDayValues(habit, whoopSleep), [habit, whoopSleep]);
+  const exactValues = useMemo(() => exactDayValues(habit, whoopSleep, whoopCycles, intakeDaily), [habit, whoopSleep, whoopCycles, intakeDaily]);
   const stats = useMemo(() => (habit ? computeStats(habit, data, weeks, today, exactValues) : null), [habit, data, weeks, today, exactValues]);
 
   /* Load habits + entries + settings on mount; subscribe to live changes on all tables. */
@@ -2083,6 +2173,28 @@ function App({ userId, email }) {
     });
   };
 
+  /* Tab order: onReorder only reshuffles local state while dragging; the drop saves
+     the whole order in one RPC. A failed save re-fetches so the rail never lies. */
+  const habitsRef = useRef(habits);
+  habitsRef.current = habits;
+  // Reorder tracks items by object identity, so keep objects stable while dragging and
+  // renumber sort_order (read by the New Habit max+1) only once the order is saved.
+  const saveOrder = () => {
+    setHabits((prev) => prev.map((h, i) => ({ ...h, sort_order: i + 1 })));
+    sb.rpc('reorder_habits', { ids: habitsRef.current.map((h) => h.id) }).then(({ error }) => {
+      if (error) { console.error('Reorder failed:', error.message); fetchHabits().then(setHabits); }
+    });
+  };
+  const moveHabit = (id, dir) => {
+    const list = habitsRef.current.slice();
+    const i = list.findIndex((h) => h.id === id), j = i + dir;
+    if (i < 0 || j < 0 || j >= list.length) return;
+    [list[i], list[j]] = [list[j], list[i]];
+    habitsRef.current = list;
+    setHabits(list);
+    saveOrder();
+  };
+
   const removeHabit = (id) => {
     const next = habits.filter((h) => h.id !== id);
     setHabits(next);
@@ -2093,7 +2205,12 @@ function App({ userId, email }) {
 
   const mobile = useIsMobile();
   const displayWeeks = mobile ? weeks.slice(-17) : weeks;
-  const yearlySummary = habit && (habit.type === 'binary'
+  const calNet = habit && habit.source === 'calories' && exactValues
+    ? Object.values(exactValues).reduce((a, b) => a + b, 0) : null;
+  const yearlySummary = habit && (calNet != null
+    ? (() => { const n = calorieNet(habit, calNet), days = Object.keys(exactValues).length;
+        return `Net ${n.n} kcal ${n.word} across ${days} tracked ${days === 1 ? 'day' : 'days'}`; })()
+    : habit.type === 'binary'
     ? `${stats.activeDays} ${habit.unit} logged in the last year`
     : `${fmtTotal(stats.yearTotal)} ${habit.unit} across ${stats.activeDays} active days in the last year`);
 
@@ -2146,9 +2263,9 @@ function App({ userId, email }) {
       {/* habit tabs */}
       <motion.div variants={fadeUp} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
         {habits.length > 0 && (
-          <div className="no-scrollbar" style={{ display: 'flex', flexWrap: 'nowrap', gap: 4, background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)', borderRadius: 999, padding: 5, maxWidth: '100%', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-            {habits.map((h) => <Tab key={h.id} habit={h} active={h.id === activeId} onClick={() => setActiveId(h.id)} />)}
-          </div>
+          <Reorder.Group as="div" axis="x" values={habits} onReorder={setHabits} className="no-scrollbar" style={{ display: 'flex', flexWrap: 'nowrap', gap: 4, background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)', borderRadius: 999, padding: 5, maxWidth: '100%', overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+            {habits.map((h) => <Tab key={h.id} habit={h} active={h.id === activeId} onClick={() => setActiveId(h.id)} onDragEnd={saveOrder} onMove={(dir) => moveHabit(h.id, dir)} />)}
+          </Reorder.Group>
         )}
         {newHabitBtn}
       </motion.div>
@@ -2194,7 +2311,7 @@ function App({ userId, email }) {
             </button>
             <div style={{ textAlign: 'right' }}>
               <div className="whoop-num" style={{ fontSize: 38, lineHeight: 1, color: habit.accent, textShadow: `0 0 26px ${withAlpha(habit.accent, 0.35)}` }}><Count value={stats.cur} /></div>
-              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)', marginTop: 2 }}>Day streak</div>
+              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--fg-3)', marginTop: 2 }}>{habit.source === 'calories' ? 'Deficit streak' : 'Day streak'}</div>
             </div>
           </div>
         </div>
@@ -2716,6 +2833,8 @@ function boot() {
   MotionConfig = fm.MotionConfig;
   useMotionValue = fm.useMotionValue;
   animate = fm.animate;
+  Reorder = fm.Reorder;
+  useDragControls = fm.useDragControls;
   const tree = MotionConfig
     ? <MotionConfig reducedMotion="user"><Root /></MotionConfig>
     : <Root />;
