@@ -89,6 +89,7 @@
     /* Base */
     html, body { margin: 0; min-height: 100%; }
     html { background: #070a0c; }   /* Safari paints overscroll + chrome from this — keep it dark */
+    html { scrollbar-gutter: stable; }  /* reserve the scrollbar lane so Habits (scrolls) and Agent (doesn't) line up */
     body {
       background: var(--app-bg);
       min-height: 100vh;
@@ -4787,23 +4788,44 @@
       size: 14,
       color: "var(--fg-1)"
     })), "New habit");
+    const gearBtn = /*#__PURE__*/React.createElement("button", {
+      onClick: () => setSettingsOpen(true),
+      title: "Settings",
+      className: "auth-ghost-btn",
+      style: {
+        width: 38,
+        height: 38,
+        borderRadius: 999,
+        flex: 'none',
+        cursor: 'pointer',
+        background: 'rgba(255,255,255,0.04)',
+        border: '1px solid rgba(255,255,255,0.08)',
+        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)',
+        color: 'var(--fg-2)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+      }
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: "settings",
+      size: 17
+    }));
     return /*#__PURE__*/React.createElement(motion.div, {
       initial: "hidden",
       animate: "show",
       variants: stagger,
-      style: agentMode ? {
-        width: '100%',
-        margin: '0 auto',
-        boxSizing: 'border-box',
-        height: '100dvh',
-        display: 'flex',
-        flexDirection: 'column',
-        padding: mobile ? '20px 14px 14px' : '28px 32px 24px'
-      } : {
+      style: {
+        // Same frame in both modes so the header never moves; Agent only adds a full-height column below it.
         width: '100%',
         maxWidth: 1180,
         margin: '0 auto',
-        padding: mobile ? '20px 14px 44px' : '40px 32px 64px'
+        boxSizing: 'border-box',
+        padding: mobile ? `20px 14px ${agentMode ? 14 : 44}px` : `40px 32px ${agentMode ? 32 : 64}px`,
+        ...(agentMode && {
+          height: '100dvh',
+          display: 'flex',
+          flexDirection: 'column'
+        })
       }
     }, /*#__PURE__*/React.createElement(motion.header, {
       variants: fadeUp,
@@ -4813,14 +4835,25 @@
         justifyContent: 'space-between',
         flexWrap: 'wrap',
         gap: '12px 16px',
-        marginBottom: agentMode ? 16 : mobile ? 22 : 30,
+        marginBottom: mobile ? 22 : 30,
         flex: 'none'
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: 'flex',
         alignItems: 'center',
-        gap: 14
+        justifyContent: 'space-between',
+        gap: 14,
+        ...(mobile && {
+          width: '100%'
+        })
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14,
+        minWidth: 0
       }
     }, /*#__PURE__*/React.createElement("svg", {
       width: "24",
@@ -4885,12 +4918,11 @@
         textTransform: 'uppercase',
         color: 'var(--fg-2)'
       }
-    }, "Habit Tracker")), /*#__PURE__*/React.createElement("div", {
+    }, "Habit Tracker")), mobile && gearBtn), /*#__PURE__*/React.createElement("div", {
       style: {
         display: 'flex',
         alignItems: 'center',
-        flexWrap: 'wrap',
-        gap: 12
+        gap: mobile ? 10 : 12
       }
     }, /*#__PURE__*/React.createElement(ModeSwitch, {
       mode: mode,
@@ -4900,10 +4932,10 @@
       }
     }), /*#__PURE__*/React.createElement("div", {
       style: {
-        display: mobile && agentMode ? 'none' : 'flex',
+        display: 'flex',
         alignItems: 'center',
-        gap: 14,
-        padding: '9px 16px',
+        gap: mobile ? 10 : 14,
+        padding: mobile ? '9px 14px' : '9px 16px',
         borderRadius: 999,
         background: 'rgba(255,255,255,0.04)',
         border: '1px solid rgba(255,255,255,0.08)',
@@ -4930,7 +4962,7 @@
         background: synced ? 'var(--teal)' : 'var(--fg-disabled)',
         boxShadow: synced ? '0 0 8px var(--teal)' : 'none'
       }
-    }), synced ? 'All changes saved' : 'Connecting…'), /*#__PURE__*/React.createElement("span", {
+    }), !mobile && (synced ? 'All changes saved' : 'Connecting…')), /*#__PURE__*/React.createElement("span", {
       style: {
         width: 1,
         height: 14,
@@ -4953,28 +4985,7 @@
         fontWeight: 600,
         whiteSpace: 'nowrap'
       }
-    }, fmtLong(today), ", ", today.getFullYear()))), /*#__PURE__*/React.createElement("button", {
-      onClick: () => setSettingsOpen(true),
-      title: "Settings",
-      className: "auth-ghost-btn",
-      style: {
-        width: 38,
-        height: 38,
-        borderRadius: 999,
-        flex: 'none',
-        cursor: 'pointer',
-        background: 'rgba(255,255,255,0.04)',
-        border: '1px solid rgba(255,255,255,0.08)',
-        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)',
-        color: 'var(--fg-2)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center'
-      }
-    }, /*#__PURE__*/React.createElement(Icon, {
-      name: "settings",
-      size: 17
-    })))), mode === 'habits' && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(motion.div, {
+    }, mobile ? fmtLong(today) : `${fmtLong(today)}, ${today.getFullYear()}`))), !mobile && gearBtn)), mode === 'habits' && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(motion.div, {
       variants: fadeUp,
       style: {
         display: 'flex',

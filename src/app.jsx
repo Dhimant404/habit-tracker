@@ -2227,42 +2227,52 @@ function App({ userId, email }) {
     </button>
   );
 
+  const gearBtn = (
+    <button onClick={() => setSettingsOpen(true)} title="Settings" className="auth-ghost-btn"
+      style={{ width: 38, height: 38, borderRadius: 999, flex: 'none', cursor: 'pointer', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)', color: 'var(--fg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <Icon name="settings" size={17} />
+    </button>
+  );
+
   return (
     <motion.div initial="hidden" animate="show" variants={stagger}
-      style={agentMode
-        ? { width: '100%', margin: '0 auto', boxSizing: 'border-box', height: '100dvh', display: 'flex', flexDirection: 'column', padding: mobile ? '20px 14px 14px' : '28px 32px 24px' }
-        : { width: '100%', maxWidth: 1180, margin: '0 auto', padding: mobile ? '20px 14px 44px' : '40px 32px 64px' }}>
+      style={{
+        // Same frame in both modes so the header never moves; Agent only adds a full-height column below it.
+        width: '100%', maxWidth: 1180, margin: '0 auto', boxSizing: 'border-box',
+        padding: mobile ? `20px 14px ${agentMode ? 14 : 44}px` : `40px 32px ${agentMode ? 32 : 64}px`,
+        ...(agentMode && { height: '100dvh', display: 'flex', flexDirection: 'column' }),
+      }}>
       {/* header */}
-      <motion.header variants={fadeUp} style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px 16px', marginBottom: agentMode ? 16 : mobile ? 22 : 30, flex: 'none' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-          <svg width="24" height="24" viewBox="0 0 64 64" aria-hidden="true" style={{ display: 'block', flex: 'none', filter: 'drop-shadow(0 0 10px rgba(22,236,6,0.3))' }}>
-            <rect x="8" y="8" width="22" height="22" rx="6" fill="var(--teal)" opacity="0.35" />
-            <rect x="34" y="8" width="22" height="22" rx="6" fill="var(--teal)" opacity="0.7" />
-            <rect x="8" y="34" width="22" height="22" rx="6" fill="var(--teal)" opacity="0.5" />
-            <rect x="34" y="34" width="22" height="22" rx="6" fill="var(--teal)" />
-          </svg>
-          <span style={{ fontSize: 18, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-1)' }}>{settings.header_text}</span>
-          <span style={{ width: 1, height: 26, background: 'var(--surface-line-strong)' }} />
-          <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-2)' }}>Habit Tracker</span>
+      <motion.header variants={fadeUp} style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px 16px', marginBottom: mobile ? 22 : 30, flex: 'none' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, ...(mobile && { width: '100%' }) }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, minWidth: 0 }}>
+            <svg width="24" height="24" viewBox="0 0 64 64" aria-hidden="true" style={{ display: 'block', flex: 'none', filter: 'drop-shadow(0 0 10px rgba(22,236,6,0.3))' }}>
+              <rect x="8" y="8" width="22" height="22" rx="6" fill="var(--teal)" opacity="0.35" />
+              <rect x="34" y="8" width="22" height="22" rx="6" fill="var(--teal)" opacity="0.7" />
+              <rect x="8" y="34" width="22" height="22" rx="6" fill="var(--teal)" opacity="0.5" />
+              <rect x="34" y="34" width="22" height="22" rx="6" fill="var(--teal)" />
+            </svg>
+            <span style={{ fontSize: 18, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-1)' }}>{settings.header_text}</span>
+            <span style={{ width: 1, height: 26, background: 'var(--surface-line-strong)' }} />
+            <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-2)' }}>Habit Tracker</span>
+          </div>
+          {mobile && gearBtn}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: mobile ? 10 : 12 }}>
           <ModeSwitch mode={mode} onChange={(m) => { setMode(m); if (m === 'agent') setAgentSeen(true); }} />
-          <div style={{ display: mobile && agentMode ? 'none' : 'flex', alignItems: 'center', gap: 14, padding: '9px 16px', borderRadius: 999, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: mobile ? 10 : 14, padding: mobile ? '9px 14px' : '9px 16px', borderRadius: 999, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)' }}>
             <span title={synced ? 'Saved to cloud' : 'Connecting to cloud…'}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: synced ? 'var(--teal)' : 'var(--fg-3)' }}>
               <span style={{ width: 7, height: 7, borderRadius: 999, flex: 'none', background: synced ? 'var(--teal)' : 'var(--fg-disabled)', boxShadow: synced ? '0 0 8px var(--teal)' : 'none' }} />
-              {synced ? 'All changes saved' : 'Connecting…'}
+              {!mobile && (synced ? 'All changes saved' : 'Connecting…')}
             </span>
             <span style={{ width: 1, height: 14, background: 'var(--surface-line)' }} />
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--fg-2)' }}>
               <Icon name="calendar" size={14} color="var(--fg-3)" />
-              <span style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: 'nowrap' }}>{fmtLong(today)}, {today.getFullYear()}</span>
+              <span style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: 'nowrap' }}>{mobile ? fmtLong(today) : `${fmtLong(today)}, ${today.getFullYear()}`}</span>
             </div>
           </div>
-          <button onClick={() => setSettingsOpen(true)} title="Settings" className="auth-ghost-btn"
-            style={{ width: 38, height: 38, borderRadius: 999, flex: 'none', cursor: 'pointer', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)', color: 'var(--fg-2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Icon name="settings" size={17} />
-          </button>
+          {!mobile && gearBtn}
         </div>
       </motion.header>
 
