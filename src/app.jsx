@@ -2374,7 +2374,9 @@ function App({ userId, email }) {
       </>)}
 
       {agentSeen && (
-        <div style={{ display: agentMode ? 'flex' : 'none', flex: 1, minHeight: 0 }}><AgentView mobile={mobile} /></div>
+        // Quick fade-in each time Agent opens; Habits keeps its original instant swap.
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: agentMode ? 1 : 0 }} transition={agentMode ? { duration: 0.18, ease: 'easeOut' } : { duration: 0 }}
+          style={{ display: agentMode ? 'flex' : 'none', flex: 1, minHeight: 0 }}><AgentView mobile={mobile} /></motion.div>
       )}
 
       <AnimatePresence>
