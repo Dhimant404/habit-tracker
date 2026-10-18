@@ -68,6 +68,17 @@ function parseMarkdown(text) {
   flush();
   return blocks;
 }
+/* stored rows -> UI messages; a `tool` row becomes a chip on the assistant reply after it */
+function rowsToMessages(rows) {
+  const out = []; let tool = null;
+  for (const r of rows) {
+    if (r.role === 'user') tool = null;
+    if (r.role === 'tool') { try { tool = JSON.parse(r.content); } catch (e) { tool = null; } continue; }
+    out.push({ id: r.id, role: r.role, content: r.content, tool: r.role === 'assistant' ? tool : null });
+    if (r.role === 'assistant') tool = null;
+  }
+  return out;
+}
 // --- END MIRROR ---
 
 // parseSSE: split chunks carry `rest` over, several events per chunk, unicode
@@ -108,5 +119,16 @@ function parseMarkdown(text) {
 {
   const [p] = parseMarkdown('<script>alert(1)</script> **x**');
   assert.deepStrictEqual(p.children, [{ type: 'text', text: '<script>alert(1)</script> ' }, { type: 'b', text: 'x' }]);
+}
+// rowsToMessages: tool chip attaches to the next assistant row only; orphan tool before a user row is dropped
+{
+  const tl = JSON.stringify({ name: 'get_whoop_data', args: { start_date: '2026-10-13', end_date: '2026-10-19' } });
+  const m = rowsToMessages([
+    { id: 1, role: 'user', content: 'q1' }, { id: 2, role: 'tool', content: tl }, { id: 3, role: 'user', content: 'q2' },
+    { id: 4, role: 'assistant', content: 'a2' }, { id: 5, role: 'user', content: 'q3' }, { id: 6, role: 'tool', content: tl }, { id: 7, role: 'assistant', content: 'a3' },
+  ]);
+  assert.strictEqual(m.length, 5);
+  assert.strictEqual(m[2].tool, null);
+  assert.strictEqual(m[4].tool.args.start_date, '2026-10-13');
 }
 console.log('test-agent: all passed');

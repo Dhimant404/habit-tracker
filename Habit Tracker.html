@@ -4900,7 +4900,7 @@
       }
     }), /*#__PURE__*/React.createElement("div", {
       style: {
-        display: 'flex',
+        display: mobile && agentMode ? 'none' : 'flex',
         alignItems: 'center',
         gap: 14,
         padding: '9px 16px',
@@ -5520,6 +5520,30 @@
     flush();
     return blocks;
   }
+  /* stored rows -> UI messages; a `tool` row becomes a chip on the assistant reply after it */
+  function rowsToMessages(rows) {
+    const out = [];
+    let tool = null;
+    for (const r of rows) {
+      if (r.role === 'user') tool = null;
+      if (r.role === 'tool') {
+        try {
+          tool = JSON.parse(r.content);
+        } catch (e) {
+          tool = null;
+        }
+        continue;
+      }
+      out.push({
+        id: r.id,
+        role: r.role,
+        content: r.content,
+        tool: r.role === 'assistant' ? tool : null
+      });
+      if (r.role === 'assistant') tool = null;
+    }
+    return out;
+  }
   // PURE-END
 
   const AGENT_GLASS = {
@@ -5562,9 +5586,9 @@
           fontWeight: 700,
           letterSpacing: '.1em',
           textTransform: 'uppercase',
-          background: on ? 'rgba(0,241,159,0.14)' : 'transparent',
+          background: on ? 'color-mix(in oklab, var(--teal) 14%, transparent)' : 'transparent',
           color: on ? 'var(--teal)' : 'var(--fg-2)',
-          boxShadow: on ? 'inset 0 0 0 1px rgba(0,241,159,0.35)' : 'none'
+          boxShadow: on ? 'inset 0 0 0 1px color-mix(in oklab, var(--teal) 35%, transparent)' : 'none'
         }
       }, label);
     }));
@@ -5586,6 +5610,7 @@
   function ChatHistory({
     sessions,
     activeId,
+    error,
     onNew,
     onPick,
     onHide
@@ -5632,7 +5657,13 @@
         minHeight: 0,
         overflowY: 'auto'
       }
-    }, groups.map(g => /*#__PURE__*/React.createElement("div", {
+    }, error && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: 'var(--fg-3)',
+        padding: '10px 8px'
+      }
+    }, 'Couldn\u2019t load history'), groups.map(g => /*#__PURE__*/React.createElement("div", {
       key: g.label
     }, /*#__PURE__*/React.createElement("div", {
       style: {
@@ -5650,35 +5681,14 @@
       tabIndex: 0,
       onClick: () => onPick(s.id),
       onKeyDown: e => {
-        if (e.key === 'Enter') onPick(s.id);
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onPick(s.id);
+        }
       },
       className: 'ag-s' + (s.id === activeId ? ' on' : ''),
       title: s.title
     }, s.title))))));
-  }
-
-  /* stored rows -> UI messages; a `tool` row becomes a chip on the assistant reply after it */
-  function rowsToMessages(rows) {
-    const out = [];
-    let tool = null;
-    for (const r of rows) {
-      if (r.role === 'tool') {
-        try {
-          tool = JSON.parse(r.content);
-        } catch (e) {
-          tool = null;
-        }
-        continue;
-      }
-      out.push({
-        id: r.id,
-        role: r.role,
-        content: r.content,
-        tool: r.role === 'assistant' ? tool : null
-      });
-      if (r.role === 'assistant') tool = null;
-    }
-    return out;
   }
   function Markdown({
     text
@@ -5791,8 +5801,7 @@
     }, done ? '✓ Copied' : '⧉ Copy');
   }
   function ChatThread({
-    messages,
-    streaming
+    messages
   }) {
     const box = useRef(null),
       stick = useRef(true);
@@ -5800,14 +5809,14 @@
       const e = box.current;
       stick.current = e.scrollHeight - e.scrollTop - e.clientHeight <= 80;
     };
+    // snap to bottom when a chat is loaded or the user sends; must run before the scroll effect
+    const snapKey = messages.length ? messages[0].id + '|' + (messages[messages.length - 2] || messages[0]).id : '';
+    useLayoutEffect(() => {
+      stick.current = true;
+    }, [snapKey]);
     useLayoutEffect(() => {
       if (stick.current && box.current) box.current.scrollTop = box.current.scrollHeight;
     }, [messages]);
-    // a new user turn always re-sticks
-    const last = messages[messages.length - 2];
-    useLayoutEffect(() => {
-      stick.current = true;
-    }, [last && last.id]);
     return /*#__PURE__*/React.createElement("div", {
       ref: box,
       onScroll: onScroll,
@@ -6008,9 +6017,18 @@
       activeRef = useRef(null),
       abortRef = useRef(null);
     const [streaming, setStreaming] = useState(false);
+    const [histErr, setHistErr] = useState(false);
     useEffect(() => {
-      listSessions().then(setSessions).catch(() => {});
+      listSessions().then(setSessions).catch(() => setHistErr(true));
     }, []);
+    useEffect(() => {
+      if (!(mobile && open)) return;
+      const h = e => {
+        if (e.key === 'Escape') setOpen(false);
+      };
+      window.addEventListener('keydown', h);
+      return () => window.removeEventListener('keydown', h);
+    }, [mobile, open]);
     const stop = () => {
       if (abortRef.current) abortRef.current.abort();
     };
@@ -6019,6 +6037,7 @@
       setActiveId(id);
     };
     const send = async text => {
+      loadTok.current++;
       const ctl = new AbortController();
       abortRef.current = ctl;
       const aid = 'a' + Date.now();
@@ -6108,6 +6127,7 @@
     const sidebar = /*#__PURE__*/React.createElement(ChatHistory, {
       sessions: sessions,
       activeId: activeId,
+      error: histErr,
       onNew: newChat,
       onPick: pick,
       onHide: () => setSide(false)
@@ -6121,24 +6141,16 @@
         position: 'relative',
         width: '100%'
       }
-    }, !mobile && /*#__PURE__*/React.createElement("div", {
+    }, !mobile && open && /*#__PURE__*/React.createElement("div", {
       style: {
         ...AGENT_GLASS,
-        width: open ? 270 : 0,
-        padding: open ? 14 : 0,
-        marginRight: open ? 0 : -16,
-        opacity: open ? 1 : 0,
-        border: open ? AGENT_GLASS.border : 'none',
+        width: 270,
+        padding: 14,
         flex: 'none',
         overflow: 'hidden',
-        transition: 'width .2s, padding .2s, opacity .15s, margin .2s'
+        boxSizing: 'border-box'
       }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        width: 242,
-        height: '100%'
-      }
-    }, sidebar)), /*#__PURE__*/React.createElement("div", {
+    }, sidebar), /*#__PURE__*/React.createElement("div", {
       style: {
         ...AGENT_GLASS,
         flex: 1,
@@ -6190,8 +6202,7 @@
         fontSize: 14
       }
     }, "Sleep, strain and workouts from WHOOP")) : /*#__PURE__*/React.createElement(ChatThread, {
-      messages: messages,
-      streaming: streaming
+      messages: messages
     }), /*#__PURE__*/React.createElement(Composer, {
       onSend: send,
       onStop: stop,

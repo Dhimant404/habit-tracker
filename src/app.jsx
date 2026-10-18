@@ -2247,7 +2247,7 @@ function App({ userId, email }) {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
           <ModeSwitch mode={mode} onChange={(m) => { setMode(m); if (m === 'agent') setAgentSeen(true); }} />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '9px 16px', borderRadius: 999, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)' }}>
+          <div style={{ display: mobile && agentMode ? 'none' : 'flex', alignItems: 'center', gap: 14, padding: '9px 16px', borderRadius: 999, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)' }}>
             <span title={synced ? 'Saved to cloud' : 'Connecting to cloud…'}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: synced ? 'var(--teal)' : 'var(--fg-3)' }}>
               <span style={{ width: 7, height: 7, borderRadius: 999, flex: 'none', background: synced ? 'var(--teal)' : 'var(--fg-disabled)', boxShadow: synced ? '0 0 8px var(--teal)' : 'none' }} />
@@ -2491,6 +2491,17 @@ function parseMarkdown(text) {
   flush();
   return blocks;
 }
+/* stored rows -> UI messages; a `tool` row becomes a chip on the assistant reply after it */
+function rowsToMessages(rows) {
+  const out = []; let tool = null;
+  for (const r of rows) {
+    if (r.role === 'user') tool = null;
+    if (r.role === 'tool') { try { tool = JSON.parse(r.content); } catch (e) { tool = null; } continue; }
+    out.push({ id: r.id, role: r.role, content: r.content, tool: r.role === 'assistant' ? tool : null });
+    if (r.role === 'assistant') tool = null;
+  }
+  return out;
+}
 // PURE-END
 
 const AGENT_GLASS = { background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05), 0 18px 50px rgba(0,0,0,0.55)', borderRadius: 24, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' };
@@ -2503,7 +2514,7 @@ function ModeSwitch({ mode, onChange }) {
         const on = mode === k;
         return (
           <button key={k} onClick={() => onChange(k)} aria-pressed={on}
-            style={{ padding: '7px 16px', borderRadius: 999, border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', background: on ? 'rgba(0,241,159,0.14)' : 'transparent', color: on ? 'var(--teal)' : 'var(--fg-2)', boxShadow: on ? 'inset 0 0 0 1px rgba(0,241,159,0.35)' : 'none' }}>
+            style={{ padding: '7px 16px', borderRadius: 999, border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', background: on ? 'color-mix(in oklab, var(--teal) 14%, transparent)' : 'transparent', color: on ? 'var(--teal)' : 'var(--fg-2)', boxShadow: on ? 'inset 0 0 0 1px color-mix(in oklab, var(--teal) 35%, transparent)' : 'none' }}>
             {label}
           </button>
         );
@@ -2517,7 +2528,7 @@ function AgentIconBtn({ title, onClick, children }) {
 }
 
 /* history sidebar: new chat + sessions grouped by day */
-function ChatHistory({ sessions, activeId, onNew, onPick, onHide }) {
+function ChatHistory({ sessions, activeId, error, onNew, onPick, onHide }) {
   const groups = useMemo(() => groupSessions(sessions, new Date()), [sessions]);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, height: '100%', minHeight: 0 }}>
@@ -2526,11 +2537,12 @@ function ChatHistory({ sessions, activeId, onNew, onPick, onHide }) {
         <AgentIconBtn title="Hide history" onClick={onHide}>{'⟨⟨'}</AgentIconBtn>
       </div>
       <div className="no-scrollbar" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+        {error && <div style={{ fontSize: 12, color: 'var(--fg-3)', padding: '10px 8px' }}>{'Couldn\u2019t load history'}</div>}
         {groups.map((g) => (
           <div key={g.label}>
             <div style={{ fontSize: 10.5, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-3)', fontWeight: 700, margin: '10px 6px 4px', whiteSpace: 'nowrap' }}>{g.label}</div>
             {g.items.map((s) => (
-              <div key={s.id} role="button" tabIndex={0} onClick={() => onPick(s.id)} onKeyDown={(e) => { if (e.key === 'Enter') onPick(s.id); }}
+              <div key={s.id} role="button" tabIndex={0} onClick={() => onPick(s.id)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPick(s.id); } }}
                 className={'ag-s' + (s.id === activeId ? ' on' : '')} title={s.title}>{s.title}</div>
             ))}
           </div>
@@ -2540,16 +2552,6 @@ function ChatHistory({ sessions, activeId, onNew, onPick, onHide }) {
   );
 }
 
-/* stored rows -> UI messages; a `tool` row becomes a chip on the assistant reply after it */
-function rowsToMessages(rows) {
-  const out = []; let tool = null;
-  for (const r of rows) {
-    if (r.role === 'tool') { try { tool = JSON.parse(r.content); } catch (e) { tool = null; } continue; }
-    out.push({ id: r.id, role: r.role, content: r.content, tool: r.role === 'assistant' ? tool : null });
-    if (r.role === 'assistant') tool = null;
-  }
-  return out;
-}
 
 function Markdown({ text }) {
   const inl = (nodes) => nodes.map((n, i) => n.type === 'b' ? <b key={i} style={{ color: '#fff', fontWeight: 700 }}>{n.text}</b>
@@ -2586,13 +2588,13 @@ function CopyBtn({ text }) {
   return <button onClick={copy} className="ag-act">{done ? '✓ Copied' : '⧉ Copy'}</button>;
 }
 
-function ChatThread({ messages, streaming }) {
+function ChatThread({ messages }) {
   const box = useRef(null), stick = useRef(true);
   const onScroll = () => { const e = box.current; stick.current = e.scrollHeight - e.scrollTop - e.clientHeight <= 80; };
+  // snap to bottom when a chat is loaded or the user sends; must run before the scroll effect
+  const snapKey = messages.length ? messages[0].id + '|' + (messages[messages.length - 2] || messages[0]).id : '';
+  useLayoutEffect(() => { stick.current = true; }, [snapKey]);
   useLayoutEffect(() => { if (stick.current && box.current) box.current.scrollTop = box.current.scrollHeight; }, [messages]);
-  // a new user turn always re-sticks
-  const last = messages[messages.length - 2];
-  useLayoutEffect(() => { stick.current = true; }, [last && last.id]);
   return (
     <div ref={box} onScroll={onScroll} style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px 0 8px' }}>
       <div style={{ maxWidth: 720, margin: '0 auto', padding: '0 24px', display: 'flex', flexDirection: 'column', gap: 28 }}>
@@ -2653,11 +2655,19 @@ function AgentView({ mobile }) {
   const loadTok = useRef(0), activeRef = useRef(null), abortRef = useRef(null);
   const [streaming, setStreaming] = useState(false);
 
-  useEffect(() => { listSessions().then(setSessions).catch(() => {}); }, []);
+  const [histErr, setHistErr] = useState(false);
+  useEffect(() => { listSessions().then(setSessions).catch(() => setHistErr(true)); }, []);
+  useEffect(() => {
+    if (!(mobile && open)) return;
+    const h = (e) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [mobile, open]);
 
   const stop = () => { if (abortRef.current) abortRef.current.abort(); };
   const useSession = (id) => { activeRef.current = id; setActiveId(id); };
   const send = async (text) => {
+    loadTok.current++;
     const ctl = new AbortController(); abortRef.current = ctl;
     const aid = 'a' + Date.now();
     setMessages((m) => [...m, { id: 'u' + Date.now(), role: 'user', content: text }, { id: aid, role: 'assistant', content: '', streaming: true }]);
@@ -2693,13 +2703,13 @@ function AgentView({ mobile }) {
   };
 
   const sidebar = (
-    <ChatHistory sessions={sessions} activeId={activeId} onNew={newChat} onPick={pick} onHide={() => setSide(false)} />
+    <ChatHistory sessions={sessions} activeId={activeId} error={histErr} onNew={newChat} onPick={pick} onHide={() => setSide(false)} />
   );
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', gap: 16, position: 'relative', width: '100%' }}>
-      {!mobile && (
-        <div style={{ ...AGENT_GLASS, width: open ? 270 : 0, padding: open ? 14 : 0, marginRight: open ? 0 : -16, opacity: open ? 1 : 0, border: open ? AGENT_GLASS.border : 'none', flex: 'none', overflow: 'hidden', transition: 'width .2s, padding .2s, opacity .15s, margin .2s' }}>
-          <div style={{ width: 242, height: '100%' }}>{sidebar}</div>
+      {!mobile && open && (
+        <div style={{ ...AGENT_GLASS, width: 270, padding: 14, flex: 'none', overflow: 'hidden', boxSizing: 'border-box' }}>
+          {sidebar}
         </div>
       )}
       <div style={{ ...AGENT_GLASS, flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', padding: '14px 18px 18px' }}>
@@ -2715,7 +2725,7 @@ function AgentView({ mobile }) {
             <div style={{ fontWeight: 800, fontSize: 22 }}>Ask about your data</div>
             <div style={{ color: 'var(--fg-3)', fontSize: 14 }}>Sleep, strain and workouts from WHOOP</div>
           </div>
-        ) : <ChatThread messages={messages} streaming={streaming} />}
+        ) : <ChatThread messages={messages} />}
         <Composer onSend={send} onStop={stop} streaming={streaming} mobile={mobile} />
       </div>
       {mobile && open && (
