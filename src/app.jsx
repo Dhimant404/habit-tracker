@@ -2667,6 +2667,12 @@ function AgentView({ mobile }) {
   const stop = () => { if (abortRef.current) abortRef.current.abort(); };
   const useSession = (id) => { activeRef.current = id; setActiveId(id); };
   const send = async (text) => {
+    const isNew = !activeRef.current;
+    const dropGhost = () => { // a failed first turn is deleted server-side; don't keep a dead session
+      const gone = activeRef.current;
+      if (!gone) return;
+      setSessions((ss) => ss.filter((s) => s.id !== gone)); useSession(null); setTitle('New chat');
+    };
     loadTok.current++;
     const ctl = new AbortController(); abortRef.current = ctl;
     const aid = 'a' + Date.now();
@@ -2681,12 +2687,18 @@ function AgentView({ mobile }) {
           setSessions((ss) => [{ id: data.sessionId, title: data.title, created_at: now, updated_at: now }, ...ss.filter((s) => s.id !== data.sessionId)]);
         } else if (event === 'tool') patch(() => ({ tool: data }));
         else if (event === 'token') patch((x) => ({ content: x.content + data.text }));
-        else if (event === 'error') patch(() => ({ streaming: false, status: 'error' }));
+        else if (event === 'error') { patch(() => ({ streaming: false, status: 'error' })); if (isNew) dropGhost(); }
         else if (event === 'done') patch(() => ({ streaming: false }));
       } });
       patch(() => ({ streaming: false }));
     } catch (e) {
-      patch(() => ({ streaming: false, status: e && e.name === 'AbortError' ? 'stopped' : 'error' }));
+      const aborted = e && e.name === 'AbortError';
+      patch(() => ({ streaming: false, status: aborted ? 'stopped' : 'error' }));
+      if (isNew && !aborted) dropGhost();
+      else if (isNew) { // abort: the server may have kept the session; trust its list
+        const sid = activeRef.current;
+        listSessions().then((l) => { setSessions(l); if (sid && !l.some((s) => s.id === sid) && activeRef.current === sid) { useSession(null); setTitle('New chat'); } }).catch(() => {});
+      }
     } finally { if (abortRef.current === ctl) { abortRef.current = null; setStreaming(false); } }
   };
 
@@ -2731,7 +2743,7 @@ function AgentView({ mobile }) {
       {mobile && open && (
         <>
           <div onClick={() => setSide(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 20, borderRadius: 24 }} />
-          <div style={{ ...AGENT_GLASS, position: 'absolute', left: 0, top: 0, bottom: 0, width: 280, maxWidth: '86%', padding: 14, zIndex: 21, background: 'rgba(14,20,22,0.96)' }}>{sidebar}</div>
+          <div style={{ ...AGENT_GLASS, position: 'absolute', left: 0, top: 0, bottom: 0, width: 280, maxWidth: '86%', padding: 14, zIndex: 21, background: 'rgba(14,20,22,0.96)', backdropFilter: 'none', WebkitBackdropFilter: 'none' }}>{sidebar}</div>
         </>
       )}
     </div>
