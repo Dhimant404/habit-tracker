@@ -258,7 +258,7 @@ Local test DB: Homebrew Postgres runs at `/opt/homebrew/bin/postgres`. The tests
     - `now.strftime("%Y-%m-%d")` and the weekday name
     - the Monday date of the current week
     - all of these rules: use tools for any data question, never invent numbers, say plainly when data is missing or WHOOP isn't connected, keep answers short, format durations as `Xh Ym`, describe today's in-progress strain as "so far"
-  - **`ChatService(repo, llm, registry)`.** `registry` may be an empty `ToolRegistry` until Task 7, so define a minimal stub interface now: `specs() -> list`, `async dispatch(ctx, name, args) -> dict`.
+  - **`ChatService(repo, llm, registry=None)`.** When `registry` is None (until Task 7), it passes `tools=[]` and an `execute_tool` that returns `{"error":"no tools"}`. From Task 7, the registry provides `specs()` and `dispatch(ctx, name, args)`.
     - `async stream(user: AuthUser, body: ChatIn, tz: ZoneInfo) -> AsyncIterator[str]` yields SSE frames `f"event: {name}\ndata: {json}\n\n"`. The order is:
       1. **Resolve the session.** With `sessionId`, use `repo.get_session` (on None, raise `LookupError` **before** the first yield; the route maps it to 404). Without one, `create_session(user.id, message[:60])` and mark it `new=True`.
       2. `session` → `{sessionId, title}`
