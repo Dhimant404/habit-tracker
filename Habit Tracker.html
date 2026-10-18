@@ -5316,22 +5316,7 @@
         padding: '0 28px',
         boxShadow: '0 0 28px rgba(22,236,6,0.25), inset 0 1px 0 rgba(255,255,255,0.3)'
       }
-    }, "Create your first habit"))), agentSeen &&
-    /*#__PURE__*/
-    // Quick fade-in each time Agent opens; Habits keeps its original instant swap.
-    React.createElement(motion.div, {
-      initial: {
-        opacity: 0
-      },
-      animate: {
-        opacity: agentMode ? 1 : 0
-      },
-      transition: agentMode ? {
-        duration: 0.18,
-        ease: 'easeOut'
-      } : {
-        duration: 0
-      },
+    }, "Create your first habit"))), agentSeen && /*#__PURE__*/React.createElement("div", {
       style: {
         display: agentMode ? 'flex' : 'none',
         flex: 1,
