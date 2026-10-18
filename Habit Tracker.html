@@ -196,6 +196,22 @@
     damping: 22,
     stiffness: 220
   };
+  /* Habits <-> Agent: the incoming view rises and fades in; habit cards follow in a short stagger. */
+  const modeView = {
+    hidden: {
+      opacity: 0,
+      y: 14
+    },
+    show: {
+      opacity: 1,
+      y: 0,
+      transition: {
+        duration: 0.42,
+        ease: [0.22, 1, 0.36, 1],
+        staggerChildren: 0.05
+      }
+    }
+  };
   const fadeUp = {
     hidden: {
       opacity: 0,
@@ -4985,7 +5001,9 @@
         fontWeight: 600,
         whiteSpace: 'nowrap'
       }
-    }, mobile ? fmtLong(today) : `${fmtLong(today)}, ${today.getFullYear()}`))), !mobile && gearBtn)), mode === 'habits' && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(motion.div, {
+    }, mobile ? fmtLong(today) : `${fmtLong(today)}, ${today.getFullYear()}`))), !mobile && gearBtn)), mode === 'habits' && /*#__PURE__*/React.createElement(motion.div, {
+      variants: modeView
+    }, /*#__PURE__*/React.createElement(motion.div, {
       variants: fadeUp,
       style: {
         display: 'flex',
@@ -5316,7 +5334,10 @@
         padding: '0 28px',
         boxShadow: '0 0 28px rgba(22,236,6,0.25), inset 0 1px 0 rgba(255,255,255,0.3)'
       }
-    }, "Create your first habit"))), agentSeen && /*#__PURE__*/React.createElement("div", {
+    }, "Create your first habit"))), agentSeen && /*#__PURE__*/React.createElement(motion.div, {
+      variants: modeView,
+      initial: "hidden",
+      animate: agentMode ? 'show' : 'hidden',
       style: {
         display: agentMode ? 'flex' : 'none',
         flex: 1,
@@ -5588,6 +5609,7 @@
         onClick: () => onChange(k),
         "aria-pressed": on,
         style: {
+          position: 'relative',
           padding: '7px 16px',
           borderRadius: 999,
           border: 'none',
@@ -5597,11 +5619,25 @@
           fontWeight: 700,
           letterSpacing: '.1em',
           textTransform: 'uppercase',
-          background: on ? 'color-mix(in oklab, var(--teal) 14%, transparent)' : 'transparent',
+          background: 'transparent',
           color: on ? 'var(--teal)' : 'var(--fg-2)',
-          boxShadow: on ? 'inset 0 0 0 1px color-mix(in oklab, var(--teal) 35%, transparent)' : 'none'
+          transition: 'color .25s ease'
         }
-      }, label);
+      }, on && /*#__PURE__*/React.createElement(motion.span, {
+        layoutId: "modePill",
+        transition: SPRING,
+        style: {
+          position: 'absolute',
+          inset: 0,
+          borderRadius: 999,
+          background: 'color-mix(in oklab, var(--teal) 14%, transparent)',
+          boxShadow: 'inset 0 0 0 1px color-mix(in oklab, var(--teal) 35%, transparent)'
+        }
+      }), /*#__PURE__*/React.createElement("span", {
+        style: {
+          position: 'relative'
+        }
+      }, label));
     }));
   }
   function AgentIconBtn({
