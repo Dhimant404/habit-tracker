@@ -11,11 +11,6 @@ let motion, AnimatePresence, MotionConfig, useMotionValue, animate, Reorder, use
    ============================================================ */
 const EASE = [0.16, 1, 0.3, 1];                 // expo-out
 const SPRING = { type: 'spring', damping: 22, stiffness: 220 };
-/* Habits <-> Agent: the incoming view rises and fades in; habit cards follow in a short stagger. */
-const modeView = {
-  hidden: { opacity: 0, y: 14 },
-  show: { opacity: 1, y: 0, transition: { duration: 0.42, ease: [0.22, 1, 0.36, 1], staggerChildren: 0.05 } },
-};
 const fadeUp = {
   hidden: { opacity: 0, y: 14 },
   show: { opacity: 1, y: 0, transition: { duration: 0.5, ease: EASE } },
@@ -2281,7 +2276,7 @@ function App({ userId, email }) {
         </div>
       </motion.header>
 
-      {mode === 'habits' && (<motion.div variants={modeView}>
+      {mode === 'habits' && (<>
       {/* habit tabs */}
       <motion.div variants={fadeUp} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
         {habits.length > 0 && (
@@ -2376,11 +2371,10 @@ function App({ userId, email }) {
           )}
         </Card>
       )}
-      </motion.div>)}
+      </>)}
 
       {agentSeen && (
-        <motion.div variants={modeView} initial="hidden" animate={agentMode ? 'show' : 'hidden'}
-          style={{ display: agentMode ? 'flex' : 'none', flex: 1, minHeight: 0 }}><AgentView mobile={mobile} /></motion.div>
+        <div style={{ display: agentMode ? 'flex' : 'none', flex: 1, minHeight: 0 }}><AgentView mobile={mobile} /></div>
       )}
 
       <AnimatePresence>
@@ -2530,12 +2524,8 @@ function ModeSwitch({ mode, onChange }) {
         const on = mode === k;
         return (
           <button key={k} onClick={() => onChange(k)} aria-pressed={on}
-            style={{ position: 'relative', padding: '7px 16px', borderRadius: 999, border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', background: 'transparent', color: on ? 'var(--teal)' : 'var(--fg-2)', transition: 'color .25s ease' }}>
-            {on && (
-              <motion.span layoutId="modePill" transition={SPRING}
-                style={{ position: 'absolute', inset: 0, borderRadius: 999, background: 'color-mix(in oklab, var(--teal) 14%, transparent)', boxShadow: 'inset 0 0 0 1px color-mix(in oklab, var(--teal) 35%, transparent)' }} />
-            )}
-            <span style={{ position: 'relative' }}>{label}</span>
+            style={{ padding: '7px 16px', borderRadius: 999, border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', background: on ? 'color-mix(in oklab, var(--teal) 14%, transparent)' : 'transparent', color: on ? 'var(--teal)' : 'var(--fg-2)', boxShadow: on ? 'inset 0 0 0 1px color-mix(in oklab, var(--teal) 35%, transparent)' : 'none' }}>
+            {label}
           </button>
         );
       })}
