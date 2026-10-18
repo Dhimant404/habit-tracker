@@ -2203,6 +2203,9 @@ function App({ userId, email }) {
     setModal(null);
   };
 
+  const [mode, setMode] = useState('habits');
+  const [agentSeen, setAgentSeen] = useState(false);
+  const agentMode = mode === 'agent';
   const mobile = useIsMobile();
   const displayWeeks = mobile ? weeks.slice(-17) : weeks;
   const calNet = habit && habit.source === 'calories' && exactValues
@@ -2226,9 +2229,11 @@ function App({ userId, email }) {
 
   return (
     <motion.div initial="hidden" animate="show" variants={stagger}
-      style={{ width: '100%', maxWidth: 1180, margin: '0 auto', padding: mobile ? '20px 14px 44px' : '40px 32px 64px' }}>
+      style={agentMode
+        ? { width: '100%', margin: '0 auto', boxSizing: 'border-box', height: '100dvh', display: 'flex', flexDirection: 'column', padding: mobile ? '20px 14px 14px' : '28px 32px 24px' }
+        : { width: '100%', maxWidth: 1180, margin: '0 auto', padding: mobile ? '20px 14px 44px' : '40px 32px 64px' }}>
       {/* header */}
-      <motion.header variants={fadeUp} style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px 16px', marginBottom: mobile ? 22 : 30 }}>
+      <motion.header variants={fadeUp} style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px 16px', marginBottom: agentMode ? 16 : mobile ? 22 : 30, flex: 'none' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
           <svg width="24" height="24" viewBox="0 0 64 64" aria-hidden="true" style={{ display: 'block', flex: 'none', filter: 'drop-shadow(0 0 10px rgba(22,236,6,0.3))' }}>
             <rect x="8" y="8" width="22" height="22" rx="6" fill="var(--teal)" opacity="0.35" />
@@ -2240,7 +2245,8 @@ function App({ userId, email }) {
           <span style={{ width: 1, height: 26, background: 'var(--surface-line-strong)' }} />
           <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-2)' }}>Habit Tracker</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+          <ModeSwitch mode={mode} onChange={(m) => { setMode(m); if (m === 'agent') setAgentSeen(true); }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '9px 16px', borderRadius: 999, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)' }}>
             <span title={synced ? 'Saved to cloud' : 'Connecting to cloud…'}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: synced ? 'var(--teal)' : 'var(--fg-3)' }}>
@@ -2260,6 +2266,7 @@ function App({ userId, email }) {
         </div>
       </motion.header>
 
+      {mode === 'habits' && (<>
       {/* habit tabs */}
       <motion.div variants={fadeUp} style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
         {habits.length > 0 && (
@@ -2354,6 +2361,11 @@ function App({ userId, email }) {
           )}
         </Card>
       )}
+      </>)}
+
+      {agentSeen && (
+        <div style={{ display: agentMode ? 'flex' : 'none', flex: 1, minHeight: 0 }}><AgentView mobile={mobile} /></div>
+      )}
 
       <AnimatePresence>
         {modal && (
@@ -2368,6 +2380,207 @@ function App({ userId, email }) {
         )}
       </AnimatePresence>
     </motion.div>
+  );
+}
+
+/* ============================================================
+   AGENT — chat over WHOOP data (backend: Cloud Run, api.dhimant.fun)
+   ============================================================ */
+const AGENT_API = 'https://api.dhimant.fun';
+
+/* authed fetch; one refresh-and-retry on 401 */
+async function agentFetch(path, opts = {}) {
+  const go = async (refresh) => {
+    const { data } = refresh ? await sb.auth.refreshSession() : await sb.auth.getSession();
+    const tok = data && data.session ? data.session.access_token : '';
+    return fetch(AGENT_API + path, {
+      ...opts,
+      headers: { ...(opts.headers || {}), Authorization: 'Bearer ' + tok, 'X-Timezone': Intl.DateTimeFormat().resolvedOptions().timeZone },
+    });
+  };
+  let r = await go(false);
+  if (r.status === 401) r = await go(true);
+  return r;
+}
+async function agentJson(path) {
+  const r = await agentFetch(path);
+  if (!r.ok) throw new Error('agent ' + r.status);
+  return r.json();
+}
+const listSessions = () => agentJson('/api/agent/sessions');
+const getSession = (id) => agentJson('/api/agent/sessions/' + encodeURIComponent(id));
+
+/* POST /chat and feed parsed SSE events to onEvent */
+async function streamChat({ sessionId, message, signal, onEvent }) {
+  const r = await agentFetch('/api/agent/chat', {
+    method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, message }),
+  });
+  if (!r.ok) throw new Error('chat ' + r.status);
+  const reader = r.body.getReader(), dec = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const p = parseSSE(buf);
+    buf = p.rest;
+    p.events.forEach(onEvent);
+  }
+}
+
+// PURE-BEGIN
+/* "event: X\ndata: <json>\n\n" frames; an unfinished tail is returned as `rest` */
+function parseSSE(buffer) {
+  const parts = buffer.replace(/\r\n/g, '\n').split('\n\n');
+  const rest = parts.pop();
+  const events = [];
+  for (const block of parts) {
+    let event = 'message'; const data = [];
+    for (const line of block.split('\n')) {
+      if (line.startsWith('event:')) event = line.slice(6).trim();
+      else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
+    }
+    if (!data.length) continue;
+    try { events.push({ event, data: JSON.parse(data.join('\n')) }); } catch (e) { /* skip malformed frame */ }
+  }
+  return { events, rest };
+}
+
+/* bucket sessions by local calendar day, newest first order preserved */
+function groupSessions(sessions, now) {
+  const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const base = day(now), groups = [['Today', []], ['Yesterday', []], ['Last 7 days', []], ['Older', []]];
+  for (const s of sessions) {
+    const age = Math.round((base - day(new Date(s.updated_at || s.created_at))) / 86400000);
+    groups[age <= 0 ? 0 : age === 1 ? 1 : age <= 7 ? 2 : 3][1].push(s);
+  }
+  return groups.filter((g) => g[1].length).map(([label, items]) => ({ label, items }));
+}
+// PURE-END
+
+const AGENT_GLASS = { background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05), 0 18px 50px rgba(0,0,0,0.55)', borderRadius: 24, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' };
+
+/* Habits | Agent segmented switch (header) */
+function ModeSwitch({ mode, onChange }) {
+  return (
+    <div role="group" aria-label="Mode" style={{ display: 'inline-flex', padding: 4, borderRadius: 999, background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)' }}>
+      {[['habits', 'Habits'], ['agent', 'Agent']].map(([k, label]) => {
+        const on = mode === k;
+        return (
+          <button key={k} onClick={() => onChange(k)} aria-pressed={on}
+            style={{ padding: '7px 16px', borderRadius: 999, border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 12, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', background: on ? 'rgba(0,241,159,0.14)' : 'transparent', color: on ? 'var(--teal)' : 'var(--fg-2)', boxShadow: on ? 'inset 0 0 0 1px rgba(0,241,159,0.35)' : 'none' }}>
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function AgentIconBtn({ title, onClick, children }) {
+  return <button onClick={onClick} title={title} aria-label={title} className="ag-ico">{children}</button>;
+}
+
+/* history sidebar: new chat + sessions grouped by day */
+function ChatHistory({ sessions, activeId, onNew, onPick, onHide }) {
+  const groups = useMemo(() => groupSessions(sessions, new Date()), [sessions]);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, height: '100%', minHeight: 0 }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 10, flex: 'none' }}>
+        <button onClick={onNew} className="auth-cta" style={{ flex: 1, padding: 11, borderRadius: 999, border: 'none', cursor: 'pointer', background: 'var(--teal)', color: '#04140d', fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 13, whiteSpace: 'nowrap' }}>{'＋'} New chat</button>
+        <AgentIconBtn title="Hide history" onClick={onHide}>{'⟨⟨'}</AgentIconBtn>
+      </div>
+      <div className="no-scrollbar" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+        {groups.map((g) => (
+          <div key={g.label}>
+            <div style={{ fontSize: 10.5, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-3)', fontWeight: 700, margin: '10px 6px 4px', whiteSpace: 'nowrap' }}>{g.label}</div>
+            {g.items.map((s) => (
+              <div key={s.id} role="button" tabIndex={0} onClick={() => onPick(s.id)} onKeyDown={(e) => { if (e.key === 'Enter') onPick(s.id); }}
+                className={'ag-s' + (s.id === activeId ? ' on' : '')} title={s.title}>{s.title}</div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* stored rows -> UI messages; a `tool` row becomes a chip on the assistant reply after it */
+function rowsToMessages(rows) {
+  const out = []; let tool = null;
+  for (const r of rows) {
+    if (r.role === 'tool') { try { tool = JSON.parse(r.content); } catch (e) { tool = null; } continue; }
+    out.push({ id: r.id, role: r.role, content: r.content, tool: r.role === 'assistant' ? tool : null });
+    if (r.role === 'assistant') tool = null;
+  }
+  return out;
+}
+
+function AgentView({ mobile }) {
+  const [sessions, setSessions] = useState([]);
+  const [activeId, setActiveId] = useState(null);
+  const [title, setTitle] = useState('New chat');
+  const [messages, setMessages] = useState([]);
+  const [open, setOpen] = useState(() => {
+    if (mobile) return false;
+    try { return localStorage.getItem('agent.sidebar') !== '0'; } catch (e) { return true; }
+  });
+  const setSide = (v) => {
+    setOpen(v);
+    if (!mobile) { try { localStorage.setItem('agent.sidebar', v ? '1' : '0'); } catch (e) { /* private mode */ } }
+  };
+  const loadTok = useRef(0);
+
+  useEffect(() => { listSessions().then(setSessions).catch(() => {}); }, []);
+
+  const newChat = () => { loadTok.current++; setActiveId(null); setTitle('New chat'); setMessages([]); if (mobile) setOpen(false); };
+  const pick = async (id) => {
+    if (mobile) setOpen(false);
+    const tok = ++loadTok.current;
+    try {
+      const s = await getSession(id);
+      if (tok !== loadTok.current) return;
+      setActiveId(s.id); setTitle(s.title); setMessages(rowsToMessages(s.messages));
+    } catch (e) { /* leave current chat as is */ }
+  };
+
+  const sidebar = (
+    <ChatHistory sessions={sessions} activeId={activeId} onNew={newChat} onPick={pick} onHide={() => setSide(false)} />
+  );
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: 'flex', gap: 16, position: 'relative', width: '100%' }}>
+      {!mobile && (
+        <div style={{ ...AGENT_GLASS, width: open ? 270 : 0, padding: open ? 14 : 0, marginRight: open ? 0 : -16, opacity: open ? 1 : 0, border: open ? AGENT_GLASS.border : 'none', flex: 'none', overflow: 'hidden', transition: 'width .2s, padding .2s, opacity .15s, margin .2s' }}>
+          <div style={{ width: 242, height: '100%' }}>{sidebar}</div>
+        </div>
+      )}
+      <div style={{ ...AGENT_GLASS, flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', padding: '14px 18px 18px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, height: 40, flex: 'none' }}>
+          {(mobile || !open) && <>
+            <AgentIconBtn title="Show history" onClick={() => setSide(true)}>{'☰'}</AgentIconBtn>
+            <AgentIconBtn title="New chat" onClick={newChat}>{'＋'}</AgentIconBtn>
+          </>}
+          <span style={{ fontSize: 13, color: 'var(--fg-3)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</span>
+        </div>
+        {messages.length === 0 ? (
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            <div style={{ fontWeight: 800, fontSize: 22 }}>Ask about your data</div>
+            <div style={{ color: 'var(--fg-3)', fontSize: 14 }}>Sleep, strain and workouts from WHOOP</div>
+          </div>
+        ) : (
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px 0 8px' }}>
+            {messages.map((m) => <div key={m.id} style={{ maxWidth: 720, margin: '0 auto 16px', padding: '0 24px', fontSize: 15, whiteSpace: 'pre-wrap' }}>{m.content}</div>)}
+          </div>
+        )}
+      </div>
+      {mobile && open && (
+        <>
+          <div onClick={() => setSide(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 20, borderRadius: 24 }} />
+          <div style={{ ...AGENT_GLASS, position: 'absolute', left: 0, top: 0, bottom: 0, width: 280, maxWidth: '86%', padding: 14, zIndex: 21, background: 'rgba(14,20,22,0.96)' }}>{sidebar}</div>
+        </>
+      )}
+    </div>
   );
 }
 
