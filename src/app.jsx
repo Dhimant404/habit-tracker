@@ -2457,6 +2457,40 @@ function groupSessions(sessions, now) {
   }
   return groups.filter((g) => g[1].length).map(([label, items]) => ({ label, items }));
 }
+/* inline: **bold**, *italic*, `code`; everything else (incl. HTML) stays literal text */
+function parseInline(s) {
+  const out = [], re = /\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`/g;
+  let last = 0, m;
+  while ((m = re.exec(s))) {
+    if (m.index > last) out.push({ type: 'text', text: s.slice(last, m.index) });
+    out.push(m[1] != null ? { type: 'b', text: m[1] } : m[2] != null ? { type: 'i', text: m[2] } : { type: 'code', text: m[3] });
+    last = re.lastIndex;
+  }
+  if (last < s.length) out.push({ type: 'text', text: s.slice(last) });
+  return out;
+}
+
+/* minimal markdown -> blocks: paragraphs, #-### headings, -/* and 1. lists */
+function parseMarkdown(text) {
+  const blocks = []; let para = [], list = null;
+  const flush = () => {
+    if (para.length) { blocks.push({ type: 'p', children: parseInline(para.join('\n')) }); para = []; }
+    list = null;
+  };
+  for (const line of text.replace(/\r\n/g, '\n').split('\n')) {
+    let m;
+    if (!line.trim()) flush();
+    else if ((m = line.match(/^\s{0,3}(#{1,3})\s+(.*)$/))) { flush(); blocks.push({ type: 'h', level: m[1].length, children: parseInline(m[2]) }); }
+    else if ((m = line.match(/^\s*([-*]|\d+\.)\s+(.*)$/))) {
+      if (para.length) flush();
+      const type = /\d/.test(m[1]) ? 'ol' : 'ul';
+      if (!list || list.type !== type) { list = { type, items: [] }; blocks.push(list); }
+      list.items.push(parseInline(m[2]));
+    } else { list = null; para.push(line.trim()); }
+  }
+  flush();
+  return blocks;
+}
 // PURE-END
 
 const AGENT_GLASS = { background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05), 0 18px 50px rgba(0,0,0,0.55)', borderRadius: 24, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' };
@@ -2517,6 +2551,92 @@ function rowsToMessages(rows) {
   return out;
 }
 
+function Markdown({ text }) {
+  const inl = (nodes) => nodes.map((n, i) => n.type === 'b' ? <b key={i} style={{ color: '#fff', fontWeight: 700 }}>{n.text}</b>
+    : n.type === 'i' ? <i key={i}>{n.text}</i>
+    : n.type === 'code' ? <code key={i} style={{ fontFamily: 'ui-monospace, Menlo, monospace', fontSize: '.88em', padding: '1px 6px', borderRadius: 6, background: 'rgba(255,255,255,0.08)' }}>{n.text}</code>
+    : <React.Fragment key={i}>{n.text}</React.Fragment>);
+  const gap = { margin: '0 0 12px' };
+  return parseMarkdown(text).map((b, i) => {
+    if (b.type === 'h') return <div key={i} style={{ fontWeight: 800, color: '#fff', fontSize: b.level === 1 ? 20 : b.level === 2 ? 17 : 15.5, margin: '4px 0 10px' }}>{inl(b.children)}</div>;
+    if (b.type === 'p') return <p key={i} style={{ ...gap, whiteSpace: 'pre-wrap' }}>{inl(b.children)}</p>;
+    const L = b.type; // 'ul' | 'ol'
+    return <L key={i} style={{ ...gap, paddingLeft: 22 }}>{b.items.map((it, j) => <li key={j} style={{ margin: '4px 0' }}>{inl(it)}</li>)}</L>;
+  });
+}
+
+const fmtDay = (s) => { const [y, m, d] = String(s).split('-').map(Number); return new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); };
+
+function ToolChip({ tool }) {
+  const a = tool.args || {};
+  const range = a.start_date && a.end_date ? ` · ${fmtDay(a.start_date)} – ${fmtDay(a.end_date)}` : '';
+  return (
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '5px 11px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)', fontSize: 11.5, color: 'var(--fg-3)', fontWeight: 600, marginBottom: 12 }}>
+      <span style={{ width: 6, height: 6, borderRadius: 9, background: '#A855F7', boxShadow: '0 0 8px #A855F7' }} />
+      Read WHOOP data{range}
+    </div>
+  );
+}
+
+function CopyBtn({ text }) {
+  const [done, setDone] = useState(false);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(text); setDone(true); setTimeout(() => setDone(false), 1500); } catch (e) { /* clipboard blocked */ }
+  };
+  return <button onClick={copy} className="ag-act">{done ? '✓ Copied' : '⧉ Copy'}</button>;
+}
+
+function ChatThread({ messages, streaming }) {
+  const box = useRef(null), stick = useRef(true);
+  const onScroll = () => { const e = box.current; stick.current = e.scrollHeight - e.scrollTop - e.clientHeight <= 80; };
+  useLayoutEffect(() => { if (stick.current && box.current) box.current.scrollTop = box.current.scrollHeight; }, [messages]);
+  // a new user turn always re-sticks
+  const last = messages[messages.length - 2];
+  useLayoutEffect(() => { stick.current = true; }, [last && last.id]);
+  return (
+    <div ref={box} onScroll={onScroll} style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px 0 8px' }}>
+      <div style={{ maxWidth: 720, margin: '0 auto', padding: '0 24px', display: 'flex', flexDirection: 'column', gap: 28 }}>
+        {messages.map((m) => m.role === 'user' ? (
+          <div key={m.id} style={{ alignSelf: 'flex-end', maxWidth: '75%', padding: '10px 16px', borderRadius: 20, background: 'rgba(255,255,255,0.07)', fontSize: 15, lineHeight: 1.55, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{m.content}</div>
+        ) : (
+          <div key={m.id} style={{ fontSize: 15, lineHeight: 1.7, color: 'rgba(255,255,255,0.88)', overflowWrap: 'anywhere' }}>
+            {m.tool && <ToolChip tool={m.tool} />}
+            {m.content && <Markdown text={m.content} />}
+            {m.streaming && <span className="ag-caret" />}
+            {m.status === 'stopped' && <div style={{ fontSize: 12, color: 'var(--fg-3)' }}>Stopped</div>}
+            {m.status === 'error' && <div style={{ fontSize: 13, color: 'rgba(255,120,120,0.8)' }}>{'Something went wrong — try again'}</div>}
+            {!m.streaming && m.content && !m.status && <div style={{ display: 'flex', marginTop: 2 }}><CopyBtn text={m.content} /></div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Composer({ onSend, onStop, streaming, mobile }) {
+  const [text, setText] = useState('');
+  const ta = useRef(null);
+  useLayoutEffect(() => { const e = ta.current; e.style.height = 'auto'; e.style.height = Math.min(e.scrollHeight, 200) + 'px'; }, [text]);
+  const can = !streaming && text.trim().length > 0;
+  const send = () => { if (!can) return; onSend(text.trim()); setText(''); };
+  return (
+    <div style={{ maxWidth: 720, width: '100%', margin: '0 auto', padding: '8px 24px 0', flex: 'none', boxSizing: 'border-box' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, padding: '10px 12px 10px 18px', borderRadius: 24, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.16)', minHeight: 56, boxSizing: 'border-box' }}>
+        <textarea ref={ta} rows={1} value={text} maxLength={4000} placeholder={'Ask about your sleep, strain or workouts…'}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }}
+          style={{ flex: 1, minWidth: 0, resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: 'var(--fg-1)', fontFamily: 'var(--font-sans)', fontSize: mobile ? 16 : 15, lineHeight: 1.5, padding: '6px 0', maxHeight: 200 }} />
+        {streaming ? (
+          <button onClick={onStop} title="Stop" aria-label="Stop" style={{ width: 34, height: 34, flex: 'none', borderRadius: 999, border: 'none', cursor: 'pointer', background: '#fff', color: '#000', fontSize: 11 }}>{'■'}</button>
+        ) : (
+          <button onClick={send} disabled={!can} title="Send" aria-label="Send" style={{ width: 34, height: 34, flex: 'none', borderRadius: 999, border: 'none', cursor: can ? 'pointer' : 'default', background: 'var(--teal)', color: '#04140d', fontWeight: 900, fontSize: 16, opacity: can ? 1 : 0.35 }}>{'↑'}</button>
+        )}
+      </div>
+      <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--fg-3)', marginTop: 8 }}>{'Enter to send · Shift+Enter for a new line'}</div>
+    </div>
+  );
+}
+
 function AgentView({ mobile }) {
   const [sessions, setSessions] = useState([]);
   const [activeId, setActiveId] = useState(null);
@@ -2530,18 +2650,45 @@ function AgentView({ mobile }) {
     setOpen(v);
     if (!mobile) { try { localStorage.setItem('agent.sidebar', v ? '1' : '0'); } catch (e) { /* private mode */ } }
   };
-  const loadTok = useRef(0);
+  const loadTok = useRef(0), activeRef = useRef(null), abortRef = useRef(null);
+  const [streaming, setStreaming] = useState(false);
 
   useEffect(() => { listSessions().then(setSessions).catch(() => {}); }, []);
 
-  const newChat = () => { loadTok.current++; setActiveId(null); setTitle('New chat'); setMessages([]); if (mobile) setOpen(false); };
+  const stop = () => { if (abortRef.current) abortRef.current.abort(); };
+  const useSession = (id) => { activeRef.current = id; setActiveId(id); };
+  const send = async (text) => {
+    const ctl = new AbortController(); abortRef.current = ctl;
+    const aid = 'a' + Date.now();
+    setMessages((m) => [...m, { id: 'u' + Date.now(), role: 'user', content: text }, { id: aid, role: 'assistant', content: '', streaming: true }]);
+    setStreaming(true);
+    const patch = (f) => setMessages((ms) => ms.map((x) => (x.id === aid ? { ...x, ...f(x) } : x)));
+    try {
+      await streamChat({ sessionId: activeRef.current || undefined, message: text, signal: ctl.signal, onEvent: ({ event, data }) => {
+        if (event === 'session') {
+          useSession(data.sessionId); setTitle(data.title);
+          const now = new Date().toISOString();
+          setSessions((ss) => [{ id: data.sessionId, title: data.title, created_at: now, updated_at: now }, ...ss.filter((s) => s.id !== data.sessionId)]);
+        } else if (event === 'tool') patch(() => ({ tool: data }));
+        else if (event === 'token') patch((x) => ({ content: x.content + data.text }));
+        else if (event === 'error') patch(() => ({ streaming: false, status: 'error' }));
+        else if (event === 'done') patch(() => ({ streaming: false }));
+      } });
+      patch(() => ({ streaming: false }));
+    } catch (e) {
+      patch(() => ({ streaming: false, status: e && e.name === 'AbortError' ? 'stopped' : 'error' }));
+    } finally { if (abortRef.current === ctl) { abortRef.current = null; setStreaming(false); } }
+  };
+
+  const newChat = () => { stop(); setStreaming(false); loadTok.current++; useSession(null); setTitle('New chat'); setMessages([]); if (mobile) setOpen(false); };
   const pick = async (id) => {
     if (mobile) setOpen(false);
+    stop(); setStreaming(false);
     const tok = ++loadTok.current;
     try {
       const s = await getSession(id);
       if (tok !== loadTok.current) return;
-      setActiveId(s.id); setTitle(s.title); setMessages(rowsToMessages(s.messages));
+      useSession(s.id); setTitle(s.title); setMessages(rowsToMessages(s.messages));
     } catch (e) { /* leave current chat as is */ }
   };
 
@@ -2568,11 +2715,8 @@ function AgentView({ mobile }) {
             <div style={{ fontWeight: 800, fontSize: 22 }}>Ask about your data</div>
             <div style={{ color: 'var(--fg-3)', fontSize: 14 }}>Sleep, strain and workouts from WHOOP</div>
           </div>
-        ) : (
-          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px 0 8px' }}>
-            {messages.map((m) => <div key={m.id} style={{ maxWidth: 720, margin: '0 auto 16px', padding: '0 24px', fontSize: 15, whiteSpace: 'pre-wrap' }}>{m.content}</div>)}
-          </div>
-        )}
+        ) : <ChatThread messages={messages} streaming={streaming} />}
+        <Composer onSend={send} onStop={stop} streaming={streaming} mobile={mobile} />
       </div>
       {mobile && open && (
         <>

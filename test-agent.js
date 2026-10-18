@@ -34,6 +34,40 @@ function groupSessions(sessions, now) {
   }
   return groups.filter((g) => g[1].length).map(([label, items]) => ({ label, items }));
 }
+/* inline: **bold**, *italic*, `code`; everything else (incl. HTML) stays literal text */
+function parseInline(s) {
+  const out = [], re = /\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`/g;
+  let last = 0, m;
+  while ((m = re.exec(s))) {
+    if (m.index > last) out.push({ type: 'text', text: s.slice(last, m.index) });
+    out.push(m[1] != null ? { type: 'b', text: m[1] } : m[2] != null ? { type: 'i', text: m[2] } : { type: 'code', text: m[3] });
+    last = re.lastIndex;
+  }
+  if (last < s.length) out.push({ type: 'text', text: s.slice(last) });
+  return out;
+}
+
+/* minimal markdown -> blocks: paragraphs, #-### headings, -/* and 1. lists */
+function parseMarkdown(text) {
+  const blocks = []; let para = [], list = null;
+  const flush = () => {
+    if (para.length) { blocks.push({ type: 'p', children: parseInline(para.join('\n')) }); para = []; }
+    list = null;
+  };
+  for (const line of text.replace(/\r\n/g, '\n').split('\n')) {
+    let m;
+    if (!line.trim()) flush();
+    else if ((m = line.match(/^\s{0,3}(#{1,3})\s+(.*)$/))) { flush(); blocks.push({ type: 'h', level: m[1].length, children: parseInline(m[2]) }); }
+    else if ((m = line.match(/^\s*([-*]|\d+\.)\s+(.*)$/))) {
+      if (para.length) flush();
+      const type = /\d/.test(m[1]) ? 'ol' : 'ul';
+      if (!list || list.type !== type) { list = { type, items: [] }; blocks.push(list); }
+      list.items.push(parseInline(m[2]));
+    } else { list = null; para.push(line.trim()); }
+  }
+  flush();
+  return blocks;
+}
 // --- END MIRROR ---
 
 // parseSSE: split chunks carry `rest` over, several events per chunk, unicode
@@ -57,5 +91,22 @@ function groupSessions(sessions, now) {
   assert.deepStrictEqual(g.map((x) => [x.label, x.items.map((i) => i.id)]),
     [['Today', ['t']], ['Yesterday', ['y']], ['Last 7 days', ['w']], ['Older', ['o']]]);
   assert.deepStrictEqual(groupSessions([], now), []);
+}
+// parseMarkdown: paragraph, bold, bullets, numbered, heading, code, html stays literal text
+{
+  const txt = (t) => ({ type: 'text', text: t });
+  assert.deepStrictEqual(parseMarkdown('Hello **big** world'),
+    [{ type: 'p', children: [txt('Hello '), { type: 'b', text: 'big' }, txt(' world')] }]);
+  assert.deepStrictEqual(parseMarkdown('- a\n* b *i*'),
+    [{ type: 'ul', items: [[txt('a')], [txt('b '), { type: 'i', text: 'i' }]] }]);
+  assert.deepStrictEqual(parseMarkdown('1. one\n2. two'),
+    [{ type: 'ol', items: [[txt('one')], [txt('two')]] }]);
+  assert.deepStrictEqual(parseMarkdown('## Title\n\npara `x=1` end'),
+    [{ type: 'h', level: 2, children: [txt('Title')] }, { type: 'p', children: [txt('para '), { type: 'code', text: 'x=1' }, txt(' end')] }]);
+}
+// test_markdown_escapes_html
+{
+  const [p] = parseMarkdown('<script>alert(1)</script> **x**');
+  assert.deepStrictEqual(p.children, [{ type: 'text', text: '<script>alert(1)</script> ' }, { type: 'b', text: 'x' }]);
 }
 console.log('test-agent: all passed');
