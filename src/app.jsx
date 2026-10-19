@@ -2374,7 +2374,7 @@ function App({ userId, email }) {
       </>)}
 
       {agentSeen && (
-        <div style={{ display: agentMode ? 'flex' : 'none', flex: 1, minHeight: 0 }}><AgentView mobile={mobile} /></div>
+        <div style={{ display: agentMode ? 'flex' : 'none', flex: 1, minHeight: 0 }}><AgentView mobile={mobile} active={agentMode} /></div>
       )}
 
       <AnimatePresence>
@@ -2437,6 +2437,119 @@ async function streamChat({ sessionId, message, signal, onEvent }) {
     buf = p.rest;
     p.events.forEach(onEvent);
   }
+}
+
+/* ---- Voice: mic -> worklet (16 kHz PCM16) -> WS relay -> Gemini Live; 24 kHz PCM16 back ---- */
+const VOICE_ERR = {
+  mic: 'Microphone access is blocked — allow it in your browser’s site settings',
+  idle: 'Voice paused — tap the mic to resume',
+  drop: 'Voice disconnected — tap the mic to resume',
+};
+// the worklet reuses the pure helpers below via their source (the build doesn't minify)
+const micWorkletSrc = () => `${makeDownsampler}\n${floatToPcm16}\n` +
+  `class Mic extends AudioWorkletProcessor {
+    constructor() { super(); this.d = makeDownsampler(sampleRate); this.buf = new Float32Array(640); this.n = 0; }
+    process(inputs) {
+      const ch = inputs[0] && inputs[0][0];
+      if (ch) for (const v of this.d(ch)) {
+        this.buf[this.n++] = v;
+        if (this.n === 640) { const p = floatToPcm16(this.buf); this.port.postMessage(p.buffer, [p.buffer]); this.n = 0; }
+      }
+      return true;
+    }
+  }
+  registerProcessor('mic', Mic);`;
+
+function useVoice({ onEvent }) {
+  const [status, setStatus] = useState('idle'); // idle|connecting|listening|thinking|speaking
+  const [error, setError] = useState(null);
+  const res = useRef({});
+  const evRef = useRef(onEvent); evRef.current = onEvent;
+
+  const stop = useCallback((msg) => {
+    const v = res.current; res.current = {};
+    if (v.ws) { v.ws.onclose = null; try { v.ws.close(1000); } catch (e) { /* already closed */ } }
+    if (v.stream) v.stream.getTracks().forEach((t) => t.stop());
+    if (v.mic) v.mic.close().catch(() => {});
+    if (v.out) v.out.close().catch(() => {});
+    if (v.audio) v.audio.srcObject = null;
+    if (v.unsub) v.unsub();
+    setStatus('idle'); setError(typeof msg === 'string' ? msg : null);
+  }, []);
+
+  const start = useCallback(async (sessionId) => {
+    if (res.current.mic) return;
+    setError(null); setStatus('connecting');
+    // iOS: contexts + <audio> must be created and resumed inside the tap, before any await
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const mic = new AC(), out = new AC();
+    mic.resume(); out.resume();
+    const dest = out.createMediaStreamDestination();
+    const audio = new Audio();
+    audio.autoplay = true; audio.setAttribute('playsinline', ''); audio.srcObject = dest.stream; // <audio> route: the path AEC references
+    audio.play().catch(() => {});
+    const v = { mic, out, dest, audio, srcs: new Set(), next: 0 };
+    res.current = v;
+    try {
+      v.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
+    } catch (e) {
+      if (res.current === v) stop(e && (e.name === 'NotAllowedError' || e.name === 'SecurityError') ? VOICE_ERR.mic : VOICE_ERR.drop);
+      return;
+    }
+    if (res.current !== v) { v.stream.getTracks().forEach((t) => t.stop()); return; }
+    try {
+      const url = URL.createObjectURL(new Blob([micWorkletSrc()], { type: 'application/javascript' }));
+      try { await mic.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+      const { data } = await sb.auth.getSession();
+      if (res.current !== v) return;
+      const node = new AudioWorkletNode(mic, 'mic');
+      const mute = mic.createGain(); mute.gain.value = 0; // keeps the graph pulled without echoing the mic
+      mic.createMediaStreamSource(v.stream).connect(node); node.connect(mute); mute.connect(mic.destination);
+
+      const play = (buf) => {
+        const f = pcm16ToFloat(buf.byteLength % 2 ? buf.slice(0, -1) : buf);
+        if (!f.length) return;
+        const b = out.createBuffer(1, f.length, 24000); // browser resamples to the context rate
+        b.copyToChannel(f, 0);
+        const s = out.createBufferSource(); s.buffer = b; s.connect(dest);
+        const t = Math.max(out.currentTime + 0.02, v.next);
+        s.start(t); v.next = t + b.duration;
+        v.srcs.add(s); s.onended = () => v.srcs.delete(s);
+      };
+      const flush = () => { v.srcs.forEach((s) => { try { s.stop(); } catch (e) { /* not started */ } }); v.srcs.clear(); v.next = 0; };
+
+      const ws = new WebSocket(AGENT_API.replace(/^http/, 'ws') + '/api/agent/voice');
+      ws.binaryType = 'arraybuffer'; v.ws = ws;
+      ws.onopen = () => ws.send(JSON.stringify({
+        type: 'start', token: data && data.session ? data.session.access_token : '',
+        sessionId: sessionId || null, tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      }));
+      node.port.onmessage = (e) => { if (v.ready && ws.readyState === 1) ws.send(e.data); };
+      ws.onmessage = (e) => {
+        if (typeof e.data !== 'string') { play(e.data); return; }
+        let m; try { m = JSON.parse(e.data); } catch (err) { return; }
+        if (m.type === 'ready') { v.ready = true; setStatus('listening'); }
+        else if (m.type === 'state') setStatus(m.value);
+        else if (m.type === 'interrupted') flush();
+        if (evRef.current) evRef.current(m);
+      };
+      ws.onclose = (e) => { if (res.current === v) stop(e.code === 4000 ? VOICE_ERR.idle : e.code === 1000 ? null : VOICE_ERR.drop); };
+      const { data: sub } = sb.auth.onAuthStateChange((event, s) => {
+        if (event === 'TOKEN_REFRESHED' && s && ws.readyState === 1) ws.send(JSON.stringify({ type: 'auth', token: s.access_token }));
+      });
+      v.unsub = () => sub.subscription.unsubscribe();
+    } catch (e) {
+      if (res.current === v) stop(VOICE_ERR.drop);
+    }
+  }, [stop]);
+
+  useEffect(() => {
+    const h = () => { if (document.hidden && res.current.mic) stop(VOICE_ERR.idle); }; // iOS suspends the mic anyway
+    document.addEventListener('visibilitychange', h);
+    return () => { document.removeEventListener('visibilitychange', h); stop(); };
+  }, [stop]);
+
+  return { status, error, start, stop };
 }
 
 // PURE-BEGIN
@@ -2680,7 +2793,64 @@ function Composer({ onSend, onStop, streaming, mobile }) {
   );
 }
 
-function AgentView({ mobile }) {
+/* Text | Voice pill (chat panel top row); only rendered for allowlisted users */
+function VoiceToggle({ mode, onChange }) {
+  return (
+    <div role="group" aria-label="Input mode" style={{ display: 'inline-flex', padding: 3, borderRadius: 999, background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)', flex: 'none' }}>
+      {[['text', 'Text'], ['voice', 'Voice']].map(([k, label]) => {
+        const on = mode === k;
+        return (
+          <button key={k} onClick={() => onChange(k)} aria-pressed={on}
+            style={{ padding: '5px 12px', borderRadius: 999, border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 11, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', background: on ? 'color-mix(in oklab, var(--teal) 14%, transparent)' : 'transparent', color: on ? 'var(--teal)' : 'var(--fg-2)' }}>
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+const VOICE_LABEL = { idle: 'Tap to talk', connecting: 'Connecting…', listening: 'Listening', thinking: 'Thinking…', speaking: 'Speaking' };
+
+function VoiceBar({ status, error, onStart, onStop }) {
+  const live = status !== 'idle';
+  return (
+    <div style={{ maxWidth: 720, width: '100%', margin: '0 auto', padding: '8px 24px 0', flex: 'none', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+      <div style={{ position: 'relative', width: 64, height: 64 }}>
+        <span className={'vc-ring ' + status} />
+        <button onClick={() => (live ? onStop() : onStart())} aria-label={live ? 'Stop voice' : 'Start voice'} title={live ? 'Stop' : 'Talk'}
+          style={{ width: 64, height: 64, borderRadius: 999, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: live ? '#fff' : 'var(--teal)', color: live ? '#000' : '#04140d' }}>
+          {live ? <span style={{ width: 16, height: 16, borderRadius: 3, background: '#000' }} /> : (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+            </svg>
+          )}
+        </button>
+      </div>
+      <div aria-live="polite" style={{ fontSize: 12, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: live ? 'var(--teal)' : 'var(--fg-3)' }}>{VOICE_LABEL[status] || ''}</div>
+      {error && <div style={{ fontSize: 12.5, color: error === VOICE_ERR.mic ? 'rgba(255,120,120,0.85)' : 'var(--fg-3)', textAlign: 'center' }}>{error}</div>}
+    </div>
+  );
+}
+
+/* apply one voice relay event to the message list; live = the turn still growing */
+function applyVoiceEvent(ms, m) {
+  const last = ms[ms.length - 1];
+  const finish = (x) => (x.live ? { ...x, live: false, streaming: false } : x);
+  if (m.type === 'transcript') {
+    if (last && last.live && last.role === m.role) return [...ms.slice(0, -1), { ...last, content: last.content + m.text }];
+    return [...ms.map(finish), { id: 'v' + Date.now() + Math.random(), role: m.role, content: m.text, live: true, streaming: m.role === 'assistant' }];
+  }
+  if (m.type === 'tool') {
+    if (last && last.live && last.role === 'assistant') return [...ms.slice(0, -1), { ...last, tool: m }];
+    return [...ms, { id: 'v' + Date.now() + Math.random(), role: 'assistant', content: '', tool: m, live: true, streaming: true }];
+  }
+  if (m.type === 'turn_done') return ms.map(finish);
+  if (m.type === 'interrupted') return ms.map((x) => (x.live && x.role === 'assistant' ? { ...finish(x), status: 'stopped' } : finish(x)));
+  return ms;
+}
+
+function AgentView({ mobile, active = true }) {
   const [sessions, setSessions] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [title, setTitle] = useState('New chat');
@@ -2695,6 +2865,24 @@ function AgentView({ mobile }) {
   };
   const loadTok = useRef(0), activeRef = useRef(null), abortRef = useRef(null);
   const [streaming, setStreaming] = useState(false);
+  const [voiceOk, setVoiceOk] = useState(false);
+  const [inputMode, setInputMode] = useState('text');
+  useEffect(() => { agentJson('/api/agent/config').then((c) => setVoiceOk(!!(c && c.voice))).catch(() => {}); }, []);
+  const voice = useVoice({ onEvent: (m) => {
+    if (m.type === 'ready') { activeRef.current = m.sessionId; setActiveId(m.sessionId); }
+    else if (m.type === 'saved') {
+      const now = new Date().toISOString();
+      setSessions((ss) => {
+        const old = ss.find((s) => s.id === m.sessionId);
+        return [{ ...(old || { created_at: now }), id: m.sessionId, title: m.title || (old && old.title), updated_at: now }, ...ss.filter((s) => s.id !== m.sessionId)];
+      });
+      if (m.title) setTitle(m.title);
+    } else setMessages((ms) => applyVoiceEvent(ms, m));
+  } });
+  const stopVoice = voice.stop;
+  // a dropped socket must not leave a turn looking "in progress"
+  useEffect(() => { if (voice.status === 'idle') setMessages((ms) => (ms.some((x) => x.live) ? applyVoiceEvent(ms, { type: 'turn_done' }) : ms)); }, [voice.status]);
+  useEffect(() => { if (!active) stopVoice(); }, [active, stopVoice]);
 
   const [histErr, setHistErr] = useState(false);
   useEffect(() => { listSessions().then(setSessions).catch(() => setHistErr(true)); }, []);
@@ -2743,10 +2931,10 @@ function AgentView({ mobile }) {
     } finally { if (abortRef.current === ctl) { abortRef.current = null; setStreaming(false); } }
   };
 
-  const newChat = () => { stop(); setStreaming(false); loadTok.current++; useSession(null); setTitle('New chat'); setMessages([]); if (mobile) setOpen(false); };
+  const newChat = () => { stop(); stopVoice(); setStreaming(false); loadTok.current++; useSession(null); setTitle('New chat'); setMessages([]); if (mobile) setOpen(false); };
   const pick = async (id) => {
     if (mobile) setOpen(false);
-    stop(); setStreaming(false);
+    stop(); stopVoice(); setStreaming(false);
     const tok = ++loadTok.current;
     try {
       const s = await getSession(id);
@@ -2771,7 +2959,8 @@ function AgentView({ mobile }) {
             <AgentIconBtn title="Show history" onClick={() => setSide(true)}>{'☰'}</AgentIconBtn>
             <AgentIconBtn title="New chat" onClick={newChat}>{'＋'}</AgentIconBtn>
           </>}
-          <span style={{ fontSize: 13, color: 'var(--fg-3)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</span>
+          <span style={{ fontSize: 13, color: 'var(--fg-3)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>{title}</span>
+          {voiceOk && <VoiceToggle mode={inputMode} onChange={(m) => { if (m === 'text') stopVoice(); setInputMode(m); }} />}
         </div>
         {messages.length === 0 ? (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
@@ -2779,7 +2968,9 @@ function AgentView({ mobile }) {
             <div style={{ color: 'var(--fg-3)', fontSize: 14 }}>Sleep, strain and workouts from WHOOP</div>
           </div>
         ) : <ChatThread messages={messages} />}
-        <Composer onSend={send} onStop={stop} streaming={streaming} mobile={mobile} />
+        {voiceOk && inputMode === 'voice' ? (
+          <VoiceBar status={voice.status} error={voice.error} onStart={() => { stop(); voice.start(activeRef.current); }} onStop={() => stopVoice()} />
+        ) : <Composer onSend={send} onStop={stop} streaming={streaming} mobile={mobile} />}
       </div>
       {mobile && open && (
         <>

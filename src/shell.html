@@ -140,7 +140,13 @@
     .ag-act:hover { background: rgba(255,255,255,0.05); color: var(--fg-2); opacity: 1; }
     .ag-caret { display: inline-block; width: 8px; height: 16px; background: var(--teal); vertical-align: -2px; margin-left: 2px; animation: agBlink 1s steps(2) infinite; }
     @keyframes agBlink { 50% { opacity: 0; } }
-    @media (prefers-reduced-motion: reduce) { .ag-caret { animation: none !important; } }
+    /* voice ring: transform/opacity only; static when idle */
+    .vc-ring { position: absolute; inset: -8px; border-radius: 999px; border: 2px solid var(--teal); opacity: 0; pointer-events: none; }
+    .vc-ring.listening { animation: vcPulse 2.2s ease-in-out infinite; }
+    .vc-ring.speaking { animation: vcPulse 0.9s ease-in-out infinite; }
+    .vc-ring.thinking, .vc-ring.connecting { animation: vcPulse 1.4s ease-in-out infinite; border-style: dashed; }
+    @keyframes vcPulse { 0%, 100% { transform: scale(1); opacity: .55; } 50% { transform: scale(1.16); opacity: .12; } }
+    @media (prefers-reduced-motion: reduce) { .ag-caret, .vc-ring { animation: none !important; } .vc-ring:not(.idle) { opacity: .5; } }
     /* Press feedback on every button */
     button { transition: transform 0.08s var(--ease); }
     button:active:not(:disabled) { transform: scale(0.97); }
