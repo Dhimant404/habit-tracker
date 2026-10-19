@@ -2394,9 +2394,9 @@ function App({ userId, email }) {
 }
 
 /* ============================================================
-   AGENT — chat over WHOOP data (backend: Cloud Run, api.dhimant.fun)
+   AGENT — chat + voice over WHOOP data (backend: Cloud Run, asia-south1)
    ============================================================ */
-const AGENT_API = 'https://api.dhimant.fun';
+const AGENT_API = 'https://backend-service-211119777913.asia-south1.run.app';
 
 /* authed fetch; one refresh-and-retry on 401 */
 async function agentFetch(path, opts = {}) {
