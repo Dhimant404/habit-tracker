@@ -2869,8 +2869,10 @@ function AgentView({ mobile, active = true }) {
   const [inputMode, setInputMode] = useState('text');
   useEffect(() => { agentJson('/api/agent/config').then((c) => setVoiceOk(!!(c && c.voice))).catch(() => {}); }, []);
   const voice = useVoice({ onEvent: (m) => {
-    if (m.type === 'ready') { activeRef.current = m.sessionId; setActiveId(m.sessionId); }
-    else if (m.type === 'saved') {
+    // adopt the session only once a turn is saved: the relay deletes a new session that never got one
+    if (m.type === 'ready') return;
+    if (m.type === 'saved') {
+      activeRef.current = m.sessionId; setActiveId(m.sessionId);
       const now = new Date().toISOString();
       setSessions((ss) => {
         const old = ss.find((s) => s.id === m.sessionId);

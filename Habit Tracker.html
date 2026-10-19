@@ -6445,10 +6445,11 @@
     }, []);
     const voice = useVoice({
       onEvent: m => {
-        if (m.type === 'ready') {
+        // adopt the session only once a turn is saved: the relay deletes a new session that never got one
+        if (m.type === 'ready') return;
+        if (m.type === 'saved') {
           activeRef.current = m.sessionId;
           setActiveId(m.sessionId);
-        } else if (m.type === 'saved') {
           const now = new Date().toISOString();
           setSessions(ss => {
             const old = ss.find(s => s.id === m.sessionId);
