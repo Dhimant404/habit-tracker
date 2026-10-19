@@ -2463,6 +2463,8 @@ const micWorkletSrc = () => `${makeDownsampler}\n${floatToPcm16}\n` +
 function useVoice({ onEvent }) {
   const [status, setStatus] = useState('idle'); // idle|connecting|listening|thinking|speaking
   const [error, setError] = useState(null);
+  const [muted, setMuted] = useState(false);
+  const [startedAt, setStartedAt] = useState(null);
   const res = useRef({});
   const evRef = useRef(onEvent); evRef.current = onEvent;
 
@@ -2474,12 +2476,20 @@ function useVoice({ onEvent }) {
     if (v.out) v.out.close().catch(() => {});
     if (v.audio) v.audio.srcObject = null;
     if (v.unsub) v.unsub();
-    setStatus('idle'); setError(typeof msg === 'string' ? msg : null);
+    setStatus('idle'); setError(typeof msg === 'string' ? msg : null); setMuted(false); setStartedAt(null);
+  }, []);
+  // muting disables the mic track: the worklet keeps sending silence, so the socket stays healthy
+  const toggleMute = useCallback(() => {
+    const st = res.current.stream;
+    if (!st) return;
+    const on = st.getAudioTracks().some((t) => t.enabled);
+    st.getAudioTracks().forEach((t) => { t.enabled = !on; });
+    setMuted(on);
   }, []);
 
   const start = useCallback(async (sessionId) => {
     if (res.current.mic) return;
-    setError(null); setStatus('connecting');
+    setError(null); setStatus('connecting'); setMuted(false); setStartedAt(Date.now());
     // iOS: contexts + <audio> must be created and resumed inside the tap, before any await
     const AC = window.AudioContext || window.webkitAudioContext;
     const mic = new AC(), out = new AC();
@@ -2550,7 +2560,7 @@ function useVoice({ onEvent }) {
     return () => { document.removeEventListener('visibilitychange', h); stop(); };
   }, [stop]);
 
-  return { status, error, start, stop };
+  return { status, error, muted, startedAt, start, stop, toggleMute };
 }
 
 // PURE-BEGIN
@@ -2754,7 +2764,12 @@ function ChatThread({ messages }) {
     <div ref={box} onScroll={onScroll} style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px 0 8px' }}>
       <div style={{ maxWidth: 720, margin: '0 auto', padding: '0 24px', display: 'flex', flexDirection: 'column', gap: 28 }}>
         {messages.map((m) => m.role === 'user' ? (
-          <div key={m.id} style={{ alignSelf: 'flex-end', maxWidth: '75%', padding: '10px 16px', borderRadius: 20, background: 'rgba(255,255,255,0.07)', fontSize: 15, lineHeight: 1.55, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{m.content}</div>
+          <div key={m.id} style={{ alignSelf: 'flex-end', maxWidth: '75%', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5 }}>
+            <div style={{ padding: '10px 16px', borderRadius: 20, background: 'rgba(255,255,255,0.07)', fontSize: 15, lineHeight: 1.55, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', opacity: m.live ? 0.75 : 1 }}>{m.content}</div>
+            {m.voice && <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 600, color: 'var(--fg-3)' }}>
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></svg>Spoken
+            </div>}
+          </div>
         ) : (
           <div key={m.id} style={{ fontSize: 15, lineHeight: 1.7, color: 'rgba(255,255,255,0.88)', overflowWrap: 'anywhere' }}>
             {m.tool && <ToolChip tool={m.tool} />}
@@ -2770,7 +2785,12 @@ function ChatThread({ messages }) {
   );
 }
 
-function Composer({ onSend, onStop, streaming, mobile }) {
+const WAVE_ICON = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" /></svg>;
+const MIC_ICON = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></svg>;
+const MIC_OFF_ICON = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M3 3l18 18M9 9v2a3 3 0 0 0 5 2.2M15 9.3V6a3 3 0 0 0-5.7-1.3M5 11a7 7 0 0 0 11.5 5.3M19 11a7 7 0 0 1-.6 2.8M12 18v3" /></svg>;
+
+/* onTalk (voice-allowlisted users only): an empty box shows Talk where Send would be */
+function Composer({ onSend, onStop, streaming, mobile, onTalk, note }) {
   const [text, setText] = useState('');
   const ta = useRef(null);
   useLayoutEffect(() => { const e = ta.current; e.style.height = 'auto'; e.style.height = Math.min(e.scrollHeight, 200) + 'px'; }, [text]);
@@ -2785,51 +2805,55 @@ function Composer({ onSend, onStop, streaming, mobile }) {
           style={{ flex: 1, minWidth: 0, resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: 'var(--fg-1)', fontFamily: 'var(--font-sans)', fontSize: mobile ? 16 : 15, lineHeight: 1.5, padding: '6px 0', maxHeight: 200 }} />
         {streaming ? (
           <button onClick={onStop} title="Stop" aria-label="Stop" style={{ width: 34, height: 34, flex: 'none', borderRadius: 999, border: 'none', cursor: 'pointer', background: '#fff', color: '#000', fontSize: 11 }}>{'■'}</button>
+        ) : onTalk && !text.trim() ? (
+          <button onClick={onTalk} title="Talk" aria-label="Start a voice conversation" className="auth-cta"
+            style={{ height: 34, flex: 'none', padding: '0 13px 0 11px', borderRadius: 999, border: 'none', cursor: 'pointer', background: 'var(--teal)', color: '#04140d', display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 13 }}>
+            {WAVE_ICON}Talk
+          </button>
         ) : (
           <button onClick={send} disabled={!can} title="Send" aria-label="Send" style={{ width: 34, height: 34, flex: 'none', borderRadius: 999, border: 'none', cursor: can ? 'pointer' : 'default', background: 'var(--teal)', color: '#04140d', fontWeight: 900, fontSize: 16, opacity: can ? 1 : 0.35 }}>{'↑'}</button>
         )}
       </div>
-      <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--fg-3)', marginTop: 8 }}>{'Enter to send · Shift+Enter for a new line'}</div>
+      <div style={{ textAlign: 'center', fontSize: note ? 12 : 11, color: note === VOICE_ERR.mic ? 'rgba(255,120,120,0.85)' : 'var(--fg-3)', marginTop: 8 }}>
+        {note || (onTalk ? 'Enter to send · tap Talk to say it out loud' : 'Enter to send · Shift+Enter for a new line')}
+      </div>
     </div>
   );
 }
 
-/* Text | Voice pill (chat panel top row); only rendered for allowlisted users */
-function VoiceToggle({ mode, onChange }) {
-  return (
-    <div role="group" aria-label="Input mode" style={{ display: 'inline-flex', padding: 3, borderRadius: 999, background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)', flex: 'none' }}>
-      {[['text', 'Text'], ['voice', 'Voice']].map(([k, label]) => {
-        const on = mode === k;
-        return (
-          <button key={k} onClick={() => onChange(k)} aria-pressed={on}
-            style={{ padding: '5px 12px', borderRadius: 999, border: 'none', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: 11, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', background: on ? 'color-mix(in oklab, var(--teal) 14%, transparent)' : 'transparent', color: on ? 'var(--teal)' : 'var(--fg-2)' }}>
-            {label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
+const VOICE_STATE = {
+  connecting: ['Connecting', 'Getting the mic ready'],
+  listening: ['Listening', 'Go ahead, I\u2019m listening'],
+  thinking: ['Thinking', 'One moment'],
+  speaking: ['Speaking', 'Start talking any time and I\u2019ll stop'],
+};
 
-const VOICE_LABEL = { idle: 'Tap to talk', connecting: 'Connecting…', listening: 'Listening', thinking: 'Thinking…', speaking: 'Speaking' };
-
-function VoiceBar({ status, error, onStart, onStop }) {
-  const live = status !== 'idle';
+/* the composer's voice form: level bars, state, timer, mute, End */
+function VoiceBar({ status, muted, startedAt, onMute, onEnd }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  const secs = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
+  const paused = muted && status === 'listening';
+  const [label, hint] = paused ? ['Muted', 'Your mic is off \u2014 tap the mic to unmute'] : (VOICE_STATE[status] || VOICE_STATE.connecting);
   return (
-    <div style={{ maxWidth: 720, width: '100%', margin: '0 auto', padding: '8px 24px 0', flex: 'none', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
-      <div style={{ position: 'relative', width: 64, height: 64 }}>
-        <span className={'vc-ring ' + status} />
-        <button onClick={() => (live ? onStop() : onStart())} aria-label={live ? 'Stop voice' : 'Start voice'} title={live ? 'Stop' : 'Talk'}
-          style={{ width: 64, height: 64, borderRadius: 999, border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', background: live ? '#fff' : 'var(--teal)', color: live ? '#000' : '#04140d' }}>
-          {live ? <span style={{ width: 16, height: 16, borderRadius: 3, background: '#000' }} /> : (
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
-            </svg>
-          )}
+    <div style={{ maxWidth: 720, width: '100%', margin: '0 auto', padding: '8px 24px 0', flex: 'none', boxSizing: 'border-box' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 10px 10px 18px', borderRadius: 28, minHeight: 56, boxSizing: 'border-box', background: 'color-mix(in oklab, var(--teal) 7%, transparent)', border: '1px solid color-mix(in oklab, var(--teal) 38%, transparent)' }}>
+        <div className={'vc-bars ' + (paused ? 'paused' : status)} aria-hidden="true"><i /><i /><i /><i /><i /></div>
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          <div aria-live="polite" style={{ fontSize: 12.5, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--teal)' }}>{label}</div>
+          <div style={{ fontSize: 12.5, color: 'var(--fg-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{hint}</div>
+        </div>
+        <div style={{ fontVariantNumeric: 'tabular-nums', fontSize: 13, fontWeight: 600, color: 'var(--fg-3)' }}>{Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0')}</div>
+        <button onClick={onMute} className="ag-ico" aria-pressed={muted} aria-label={muted ? 'Unmute microphone' : 'Mute microphone'} title={muted ? 'Unmute' : 'Mute'}
+          style={muted ? { background: 'rgba(255,90,90,0.18)', borderColor: 'rgba(255,90,90,0.4)', color: '#fff' } : undefined}>
+          {muted ? MIC_OFF_ICON : MIC_ICON}
+        </button>
+        <button onClick={onEnd} aria-label="End voice conversation" className="auth-cta"
+          style={{ height: 40, flex: 'none', padding: '0 15px', borderRadius: 999, border: 'none', cursor: 'pointer', background: '#fff', color: '#000', display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 13 }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" /></svg>End
         </button>
       </div>
-      <div aria-live="polite" style={{ fontSize: 12, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: live ? 'var(--teal)' : 'var(--fg-3)' }}>{VOICE_LABEL[status] || ''}</div>
-      {error && <div style={{ fontSize: 12.5, color: error === VOICE_ERR.mic ? 'rgba(255,120,120,0.85)' : 'var(--fg-3)', textAlign: 'center' }}>{error}</div>}
+      <div style={{ textAlign: 'center', fontSize: 11, color: 'var(--fg-3)', marginTop: 8 }}>Everything said here is saved to this chat, so you can switch back to typing any time</div>
     </div>
   );
 }
@@ -2840,7 +2864,7 @@ function applyVoiceEvent(ms, m) {
   const finish = (x) => (x.live ? { ...x, live: false, streaming: false } : x);
   if (m.type === 'transcript') {
     if (last && last.live && last.role === m.role) return [...ms.slice(0, -1), { ...last, content: last.content + m.text }];
-    return [...ms.map(finish), { id: 'v' + Date.now() + Math.random(), role: m.role, content: m.text, live: true, streaming: m.role === 'assistant' }];
+    return [...ms.map(finish), { id: 'v' + Date.now() + Math.random(), role: m.role, content: m.text, live: true, voice: true, streaming: m.role === 'assistant' }];
   }
   if (m.type === 'tool') {
     if (last && last.live && last.role === 'assistant') return [...ms.slice(0, -1), { ...last, tool: m }];
@@ -2868,7 +2892,6 @@ function AgentView({ mobile, active = true }) {
   const [streaming, setStreaming] = useState(false);
   const [voiceOk, setVoiceOk] = useState(false);
   const voiceSid = useRef(null);
-  const [inputMode, setInputMode] = useState('text');
   useEffect(() => { agentJson('/api/agent/config').then((c) => setVoiceOk(!!(c && c.voice))).catch(() => {}); }, []);
   const voice = useVoice({ onEvent: (m) => {
     // adopt the session only once a turn is saved: the relay deletes a new session that never got one
@@ -2978,7 +3001,6 @@ function AgentView({ mobile, active = true }) {
             <AgentIconBtn title="New chat" onClick={newChat}>{'＋'}</AgentIconBtn>
           </>}
           <span style={{ fontSize: 13, color: 'var(--fg-3)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>{title}</span>
-          {voiceOk && <VoiceToggle mode={inputMode} onChange={(m) => { if (m === 'text') stopVoice(); setInputMode(m); }} />}
         </div>
         {messages.length === 0 ? (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
@@ -2986,9 +3008,10 @@ function AgentView({ mobile, active = true }) {
             <div style={{ color: 'var(--fg-3)', fontSize: 14 }}>Sleep, strain and workouts from WHOOP</div>
           </div>
         ) : <ChatThread messages={messages} />}
-        {voiceOk && inputMode === 'voice' ? (
-          <VoiceBar status={voice.status} error={voice.error} onStart={() => { stop(); voice.start(activeRef.current); }} onStop={() => stopVoice()} />
-        ) : <Composer onSend={send} onStop={stop} streaming={streaming} mobile={mobile} />}
+        {voice.status !== 'idle' ? (
+          <VoiceBar status={voice.status} muted={voice.muted} startedAt={voice.startedAt} onMute={voice.toggleMute} onEnd={() => stopVoice()} />
+        ) : <Composer onSend={send} onStop={stop} streaming={streaming} mobile={mobile} note={voice.error}
+              onTalk={voiceOk ? () => { stop(); voice.start(activeRef.current); } : null} />}
       </div>
       {mobile && open && (
         <>

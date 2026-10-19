@@ -141,12 +141,16 @@
     .ag-caret { display: inline-block; width: 8px; height: 16px; background: var(--teal); vertical-align: -2px; margin-left: 2px; animation: agBlink 1s steps(2) infinite; }
     @keyframes agBlink { 50% { opacity: 0; } }
     /* voice ring: transform/opacity only; static when idle */
-    .vc-ring { position: absolute; inset: -8px; border-radius: 999px; border: 2px solid var(--teal); opacity: 0; pointer-events: none; }
-    .vc-ring.listening { animation: vcPulse 2.2s ease-in-out infinite; }
-    .vc-ring.speaking { animation: vcPulse 0.9s ease-in-out infinite; }
-    .vc-ring.thinking, .vc-ring.connecting { animation: vcPulse 1.4s ease-in-out infinite; border-style: dashed; }
-    @keyframes vcPulse { 0%, 100% { transform: scale(1); opacity: .55; } 50% { transform: scale(1.16); opacity: .12; } }
-    @media (prefers-reduced-motion: reduce) { .ag-caret, .vc-ring { animation: none !important; } .vc-ring:not(.idle) { opacity: .5; } }
+    .vc-bars { display: flex; align-items: center; gap: 3px; height: 26px; flex: none; }
+    .vc-bars i { display: block; width: 4px; height: 100%; border-radius: 4px; background: var(--teal); transform: scaleY(.25); }
+    .vc-bars.listening i { animation: vcBar 1.6s ease-in-out infinite; }
+    .vc-bars.speaking i { animation: vcBar .65s ease-in-out infinite; }
+    .vc-bars.thinking i, .vc-bars.connecting i { animation: vcDot 1.2s ease-in-out infinite; }
+    .vc-bars.paused i { transform: scaleY(.18); opacity: .4; }
+    .vc-bars i:nth-child(2) { animation-delay: .12s; } .vc-bars i:nth-child(3) { animation-delay: .24s; } .vc-bars i:nth-child(4) { animation-delay: .36s; } .vc-bars i:nth-child(5) { animation-delay: .48s; }
+    @keyframes vcBar { 0%, 100% { transform: scaleY(.25); } 50% { transform: scaleY(1); } }
+    @keyframes vcDot { 0%, 100% { transform: scaleY(.18); opacity: .35; } 50% { transform: scaleY(.18); opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) { .ag-caret, .vc-bars i { animation: none !important; } .vc-bars:not(.paused) i { transform: scaleY(.6); } }
     /* Press feedback on every button */
     button { transition: transform 0.08s var(--ease); }
     button:active:not(:disabled) { transform: scale(0.97); }
@@ -5449,6 +5453,8 @@
   }) {
     const [status, setStatus] = useState('idle'); // idle|connecting|listening|thinking|speaking
     const [error, setError] = useState(null);
+    const [muted, setMuted] = useState(false);
+    const [startedAt, setStartedAt] = useState(null);
     const res = useRef({});
     const evRef = useRef(onEvent);
     evRef.current = onEvent;
@@ -5468,11 +5474,25 @@
       if (v.unsub) v.unsub();
       setStatus('idle');
       setError(typeof msg === 'string' ? msg : null);
+      setMuted(false);
+      setStartedAt(null);
+    }, []);
+    // muting disables the mic track: the worklet keeps sending silence, so the socket stays healthy
+    const toggleMute = useCallback(() => {
+      const st = res.current.stream;
+      if (!st) return;
+      const on = st.getAudioTracks().some(t => t.enabled);
+      st.getAudioTracks().forEach(t => {
+        t.enabled = !on;
+      });
+      setMuted(on);
     }, []);
     const start = useCallback(async sessionId => {
       if (res.current.mic) return;
       setError(null);
       setStatus('connecting');
+      setMuted(false);
+      setStartedAt(Date.now());
       // iOS: contexts + <audio> must be created and resumed inside the tap, before any await
       const AC = window.AudioContext || window.webkitAudioContext;
       const mic = new AC(),
@@ -5612,8 +5632,11 @@
     return {
       status,
       error,
+      muted,
+      startedAt,
       start,
-      stop
+      stop,
+      toggleMute
     };
   }
 
@@ -6086,15 +6109,49 @@
       style: {
         alignSelf: 'flex-end',
         maxWidth: '75%',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'flex-end',
+        gap: 5
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
         padding: '10px 16px',
         borderRadius: 20,
         background: 'rgba(255,255,255,0.07)',
         fontSize: 15,
         lineHeight: 1.55,
         whiteSpace: 'pre-wrap',
-        overflowWrap: 'anywhere'
+        overflowWrap: 'anywhere',
+        opacity: m.live ? 0.75 : 1
       }
-    }, m.content) : /*#__PURE__*/React.createElement("div", {
+    }, m.content), m.voice && /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 5,
+        fontSize: 11,
+        fontWeight: 600,
+        color: 'var(--fg-3)'
+      }
+    }, /*#__PURE__*/React.createElement("svg", {
+      width: "11",
+      height: "11",
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      strokeWidth: "2.4",
+      strokeLinecap: "round",
+      "aria-hidden": "true"
+    }, /*#__PURE__*/React.createElement("rect", {
+      x: "9",
+      y: "3",
+      width: "6",
+      height: "11",
+      rx: "3"
+    }), /*#__PURE__*/React.createElement("path", {
+      d: "M5 11a7 7 0 0 0 14 0M12 18v3"
+    })), "Spoken")) : /*#__PURE__*/React.createElement("div", {
       key: m.id,
       style: {
         fontSize: 15,
@@ -6127,11 +6184,57 @@
       text: m.content
     }))))));
   }
+  const WAVE_ICON = /*#__PURE__*/React.createElement("svg", {
+    width: "18",
+    height: "18",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2.4",
+    strokeLinecap: "round",
+    "aria-hidden": "true"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"
+  }));
+  const MIC_ICON = /*#__PURE__*/React.createElement("svg", {
+    width: "18",
+    height: "18",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2.2",
+    strokeLinecap: "round",
+    "aria-hidden": "true"
+  }, /*#__PURE__*/React.createElement("rect", {
+    x: "9",
+    y: "3",
+    width: "6",
+    height: "11",
+    rx: "3"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M5 11a7 7 0 0 0 14 0M12 18v3"
+  }));
+  const MIC_OFF_ICON = /*#__PURE__*/React.createElement("svg", {
+    width: "18",
+    height: "18",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2.2",
+    strokeLinecap: "round",
+    "aria-hidden": "true"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M3 3l18 18M9 9v2a3 3 0 0 0 5 2.2M15 9.3V6a3 3 0 0 0-5.7-1.3M5 11a7 7 0 0 0 11.5 5.3M19 11a7 7 0 0 1-.6 2.8M12 18v3"
+  }));
+
+  /* onTalk (voice-allowlisted users only): an empty box shows Talk where Send would be */
   function Composer({
     onSend,
     onStop,
     streaming,
-    mobile
+    mobile,
+    onTalk,
+    note
   }) {
     const [text, setText] = useState('');
     const ta = useRef(null);
@@ -6209,7 +6312,28 @@
         color: '#000',
         fontSize: 11
       }
-    }, '■') : /*#__PURE__*/React.createElement("button", {
+    }, '■') : onTalk && !text.trim() ? /*#__PURE__*/React.createElement("button", {
+      onClick: onTalk,
+      title: "Talk",
+      "aria-label": "Start a voice conversation",
+      className: "auth-cta",
+      style: {
+        height: 34,
+        flex: 'none',
+        padding: '0 13px 0 11px',
+        borderRadius: 999,
+        border: 'none',
+        cursor: 'pointer',
+        background: 'var(--teal)',
+        color: '#04140d',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        fontFamily: 'var(--font-sans)',
+        fontWeight: 800,
+        fontSize: 13
+      }
+    }, WAVE_ICON, "Talk") : /*#__PURE__*/React.createElement("button", {
       onClick: send,
       disabled: !can,
       title: "Send",
@@ -6230,65 +6354,35 @@
     }, '↑')), /*#__PURE__*/React.createElement("div", {
       style: {
         textAlign: 'center',
-        fontSize: 11,
-        color: 'var(--fg-3)',
+        fontSize: note ? 12 : 11,
+        color: note === VOICE_ERR.mic ? 'rgba(255,120,120,0.85)' : 'var(--fg-3)',
         marginTop: 8
       }
-    }, 'Enter to send · Shift+Enter for a new line'));
+    }, note || (onTalk ? 'Enter to send · tap Talk to say it out loud' : 'Enter to send · Shift+Enter for a new line')));
   }
-
-  /* Text | Voice pill (chat panel top row); only rendered for allowlisted users */
-  function VoiceToggle({
-    mode,
-    onChange
-  }) {
-    return /*#__PURE__*/React.createElement("div", {
-      role: "group",
-      "aria-label": "Input mode",
-      style: {
-        display: 'inline-flex',
-        padding: 3,
-        borderRadius: 999,
-        background: 'rgba(255,255,255,0.035)',
-        border: '1px solid rgba(255,255,255,0.08)',
-        flex: 'none'
-      }
-    }, [['text', 'Text'], ['voice', 'Voice']].map(([k, label]) => {
-      const on = mode === k;
-      return /*#__PURE__*/React.createElement("button", {
-        key: k,
-        onClick: () => onChange(k),
-        "aria-pressed": on,
-        style: {
-          padding: '5px 12px',
-          borderRadius: 999,
-          border: 'none',
-          cursor: 'pointer',
-          fontFamily: 'var(--font-sans)',
-          fontSize: 11,
-          fontWeight: 700,
-          letterSpacing: '.08em',
-          textTransform: 'uppercase',
-          background: on ? 'color-mix(in oklab, var(--teal) 14%, transparent)' : 'transparent',
-          color: on ? 'var(--teal)' : 'var(--fg-2)'
-        }
-      }, label);
-    }));
-  }
-  const VOICE_LABEL = {
-    idle: 'Tap to talk',
-    connecting: 'Connecting…',
-    listening: 'Listening',
-    thinking: 'Thinking…',
-    speaking: 'Speaking'
+  const VOICE_STATE = {
+    connecting: ['Connecting', 'Getting the mic ready'],
+    listening: ['Listening', 'Go ahead, I\u2019m listening'],
+    thinking: ['Thinking', 'One moment'],
+    speaking: ['Speaking', 'Start talking any time and I\u2019ll stop']
   };
+
+  /* the composer's voice form: level bars, state, timer, mute, End */
   function VoiceBar({
     status,
-    error,
-    onStart,
-    onStop
+    muted,
+    startedAt,
+    onMute,
+    onEnd
   }) {
-    const live = status !== 'idle';
+    const [now, setNow] = useState(Date.now());
+    useEffect(() => {
+      const t = setInterval(() => setNow(Date.now()), 1000);
+      return () => clearInterval(t);
+    }, []);
+    const secs = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
+    const paused = muted && status === 'listening';
+    const [label, hint] = paused ? ['Muted', 'Your mic is off \u2014 tap the mic to unmute'] : VOICE_STATE[status] || VOICE_STATE.connecting;
     return /*#__PURE__*/React.createElement("div", {
       style: {
         maxWidth: 720,
@@ -6296,77 +6390,104 @@
         margin: '0 auto',
         padding: '8px 24px 0',
         flex: 'none',
-        boxSizing: 'border-box',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: 10
+        boxSizing: 'border-box'
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
-        position: 'relative',
-        width: 64,
-        height: 64
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        padding: '10px 10px 10px 18px',
+        borderRadius: 28,
+        minHeight: 56,
+        boxSizing: 'border-box',
+        background: 'color-mix(in oklab, var(--teal) 7%, transparent)',
+        border: '1px solid color-mix(in oklab, var(--teal) 38%, transparent)'
       }
-    }, /*#__PURE__*/React.createElement("span", {
-      className: 'vc-ring ' + status
-    }), /*#__PURE__*/React.createElement("button", {
-      onClick: () => live ? onStop() : onStart(),
-      "aria-label": live ? 'Stop voice' : 'Start voice',
-      title: live ? 'Stop' : 'Talk',
+    }, /*#__PURE__*/React.createElement("div", {
+      className: 'vc-bars ' + (paused ? 'paused' : status),
+      "aria-hidden": "true"
+    }, /*#__PURE__*/React.createElement("i", null), /*#__PURE__*/React.createElement("i", null), /*#__PURE__*/React.createElement("i", null), /*#__PURE__*/React.createElement("i", null), /*#__PURE__*/React.createElement("i", null)), /*#__PURE__*/React.createElement("div", {
       style: {
-        width: 64,
-        height: 64,
+        flex: 1,
+        minWidth: 0,
+        display: 'flex',
+        flexDirection: 'column'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      "aria-live": "polite",
+      style: {
+        fontSize: 12.5,
+        fontWeight: 800,
+        letterSpacing: '.1em',
+        textTransform: 'uppercase',
+        color: 'var(--teal)'
+      }
+    }, label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12.5,
+        color: 'var(--fg-3)',
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis'
+      }
+    }, hint)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontVariantNumeric: 'tabular-nums',
+        fontSize: 13,
+        fontWeight: 600,
+        color: 'var(--fg-3)'
+      }
+    }, Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0')), /*#__PURE__*/React.createElement("button", {
+      onClick: onMute,
+      className: "ag-ico",
+      "aria-pressed": muted,
+      "aria-label": muted ? 'Unmute microphone' : 'Mute microphone',
+      title: muted ? 'Unmute' : 'Mute',
+      style: muted ? {
+        background: 'rgba(255,90,90,0.18)',
+        borderColor: 'rgba(255,90,90,0.4)',
+        color: '#fff'
+      } : undefined
+    }, muted ? MIC_OFF_ICON : MIC_ICON), /*#__PURE__*/React.createElement("button", {
+      onClick: onEnd,
+      "aria-label": "End voice conversation",
+      className: "auth-cta",
+      style: {
+        height: 40,
+        flex: 'none',
+        padding: '0 15px',
         borderRadius: 999,
         border: 'none',
         cursor: 'pointer',
-        display: 'flex',
+        background: '#fff',
+        color: '#000',
+        display: 'inline-flex',
         alignItems: 'center',
-        justifyContent: 'center',
-        background: live ? '#fff' : 'var(--teal)',
-        color: live ? '#000' : '#04140d'
+        gap: 6,
+        fontFamily: 'var(--font-sans)',
+        fontWeight: 800,
+        fontSize: 13
       }
-    }, live ? /*#__PURE__*/React.createElement("span", {
-      style: {
-        width: 16,
-        height: 16,
-        borderRadius: 3,
-        background: '#000'
-      }
-    }) : /*#__PURE__*/React.createElement("svg", {
-      width: "24",
-      height: "24",
+    }, /*#__PURE__*/React.createElement("svg", {
+      width: "13",
+      height: "13",
       viewBox: "0 0 24 24",
       fill: "none",
       stroke: "currentColor",
-      strokeWidth: "2.2",
+      strokeWidth: "2.8",
       strokeLinecap: "round",
-      strokeLinejoin: "round",
       "aria-hidden": "true"
-    }, /*#__PURE__*/React.createElement("rect", {
-      x: "9",
-      y: "3",
-      width: "6",
-      height: "11",
-      rx: "3"
-    }), /*#__PURE__*/React.createElement("path", {
-      d: "M5 11a7 7 0 0 0 14 0M12 18v3"
-    })))), /*#__PURE__*/React.createElement("div", {
-      "aria-live": "polite",
+    }, /*#__PURE__*/React.createElement("path", {
+      d: "M6 6l12 12M18 6L6 18"
+    })), "End")), /*#__PURE__*/React.createElement("div", {
       style: {
-        fontSize: 12,
-        fontWeight: 700,
-        letterSpacing: '.08em',
-        textTransform: 'uppercase',
-        color: live ? 'var(--teal)' : 'var(--fg-3)'
+        textAlign: 'center',
+        fontSize: 11,
+        color: 'var(--fg-3)',
+        marginTop: 8
       }
-    }, VOICE_LABEL[status] || ''), error && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12.5,
-        color: error === VOICE_ERR.mic ? 'rgba(255,120,120,0.85)' : 'var(--fg-3)',
-        textAlign: 'center'
-      }
-    }, error));
+    }, "Everything said here is saved to this chat, so you can switch back to typing any time"));
   }
 
   /* apply one voice relay event to the message list; live = the turn still growing */
@@ -6387,6 +6508,7 @@
         role: m.role,
         content: m.text,
         live: true,
+        voice: true,
         streaming: m.role === 'assistant'
       }];
     }
@@ -6441,7 +6563,6 @@
     const [streaming, setStreaming] = useState(false);
     const [voiceOk, setVoiceOk] = useState(false);
     const voiceSid = useRef(null);
-    const [inputMode, setInputMode] = useState('text');
     useEffect(() => {
       agentJson('/api/agent/config').then(c => setVoiceOk(!!(c && c.voice))).catch(() => {});
     }, []);
@@ -6694,13 +6815,7 @@
         flex: 1,
         minWidth: 0
       }
-    }, title), voiceOk && /*#__PURE__*/React.createElement(VoiceToggle, {
-      mode: inputMode,
-      onChange: m => {
-        if (m === 'text') stopVoice();
-        setInputMode(m);
-      }
-    })), messages.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    }, title)), messages.length === 0 ? /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
         display: 'flex',
@@ -6721,19 +6836,22 @@
       }
     }, "Sleep, strain and workouts from WHOOP")) : /*#__PURE__*/React.createElement(ChatThread, {
       messages: messages
-    }), voiceOk && inputMode === 'voice' ? /*#__PURE__*/React.createElement(VoiceBar, {
+    }), voice.status !== 'idle' ? /*#__PURE__*/React.createElement(VoiceBar, {
       status: voice.status,
-      error: voice.error,
-      onStart: () => {
-        stop();
-        voice.start(activeRef.current);
-      },
-      onStop: () => stopVoice()
+      muted: voice.muted,
+      startedAt: voice.startedAt,
+      onMute: voice.toggleMute,
+      onEnd: () => stopVoice()
     }) : /*#__PURE__*/React.createElement(Composer, {
       onSend: send,
       onStop: stop,
       streaming: streaming,
-      mobile: mobile
+      mobile: mobile,
+      note: voice.error,
+      onTalk: voiceOk ? () => {
+        stop();
+        voice.start(activeRef.current);
+      } : null
     })), mobile && open && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
       onClick: () => setSide(false),
       style: {

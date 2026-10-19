@@ -141,12 +141,16 @@
     .ag-caret { display: inline-block; width: 8px; height: 16px; background: var(--teal); vertical-align: -2px; margin-left: 2px; animation: agBlink 1s steps(2) infinite; }
     @keyframes agBlink { 50% { opacity: 0; } }
     /* voice ring: transform/opacity only; static when idle */
-    .vc-ring { position: absolute; inset: -8px; border-radius: 999px; border: 2px solid var(--teal); opacity: 0; pointer-events: none; }
-    .vc-ring.listening { animation: vcPulse 2.2s ease-in-out infinite; }
-    .vc-ring.speaking { animation: vcPulse 0.9s ease-in-out infinite; }
-    .vc-ring.thinking, .vc-ring.connecting { animation: vcPulse 1.4s ease-in-out infinite; border-style: dashed; }
-    @keyframes vcPulse { 0%, 100% { transform: scale(1); opacity: .55; } 50% { transform: scale(1.16); opacity: .12; } }
-    @media (prefers-reduced-motion: reduce) { .ag-caret, .vc-ring { animation: none !important; } .vc-ring:not(.idle) { opacity: .5; } }
+    .vc-bars { display: flex; align-items: center; gap: 3px; height: 26px; flex: none; }
+    .vc-bars i { display: block; width: 4px; height: 100%; border-radius: 4px; background: var(--teal); transform: scaleY(.25); }
+    .vc-bars.listening i { animation: vcBar 1.6s ease-in-out infinite; }
+    .vc-bars.speaking i { animation: vcBar .65s ease-in-out infinite; }
+    .vc-bars.thinking i, .vc-bars.connecting i { animation: vcDot 1.2s ease-in-out infinite; }
+    .vc-bars.paused i { transform: scaleY(.18); opacity: .4; }
+    .vc-bars i:nth-child(2) { animation-delay: .12s; } .vc-bars i:nth-child(3) { animation-delay: .24s; } .vc-bars i:nth-child(4) { animation-delay: .36s; } .vc-bars i:nth-child(5) { animation-delay: .48s; }
+    @keyframes vcBar { 0%, 100% { transform: scaleY(.25); } 50% { transform: scaleY(1); } }
+    @keyframes vcDot { 0%, 100% { transform: scaleY(.18); opacity: .35; } 50% { transform: scaleY(.18); opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) { .ag-caret, .vc-bars i { animation: none !important; } .vc-bars:not(.paused) i { transform: scaleY(.6); } }
     /* Press feedback on every button */
     button { transition: transform 0.08s var(--ease); }
     button:active:not(:disabled) { transform: scale(0.97); }
