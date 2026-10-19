@@ -2512,6 +2512,37 @@ function rowsToMessages(rows) {
   }
   return out;
 }
+/* voice PCM: float [-1,1] <-> 16-bit little-endian */
+function floatToPcm16(f32) {
+  const out = new Int16Array(f32.length);
+  for (let i = 0; i < f32.length; i++) out[i] = Math.round(Math.max(-1, Math.min(1, f32[i])) * 32767);
+  return out;
+}
+function pcm16ToFloat(buf) {
+  const s = new Int16Array(buf), out = new Float32Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s[i] / 32768;
+  return out;
+}
+/* stateful box-average downsampler; leftovers and the fractional position carry across calls */
+function makeDownsampler(inRate, outRate = 16000) {
+  const step = inRate / outRate;
+  let rest = new Float32Array(0), pos = 0;
+  return (f32) => {
+    const all = new Float32Array(rest.length + f32.length);
+    all.set(rest); all.set(f32, rest.length);
+    const out = [];
+    while (pos + step <= all.length) {
+      const a = Math.floor(pos), b = Math.max(a + 1, Math.floor(pos + step));
+      let sum = 0;
+      for (let i = a; i < b; i++) sum += all[i];
+      out.push(sum / (b - a));
+      pos += step;
+    }
+    const keep = Math.floor(pos);
+    rest = all.slice(keep); pos -= keep;
+    return Float32Array.from(out);
+  };
+}
 // PURE-END
 
 const AGENT_GLASS = { background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05), 0 18px 50px rgba(0,0,0,0.55)', borderRadius: 24, backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' };
