@@ -2528,12 +2528,13 @@ function useVoice({ onEvent }) {
       ws.onmessage = (e) => {
         if (typeof e.data !== 'string') { play(e.data); return; }
         let m; try { m = JSON.parse(e.data); } catch (err) { return; }
+        if (m.type === 'error') v.err = m.message;
         if (m.type === 'ready') { v.ready = true; setStatus('listening'); }
         else if (m.type === 'state') setStatus(m.value);
         else if (m.type === 'interrupted') flush();
         if (evRef.current) evRef.current(m);
       };
-      ws.onclose = (e) => { if (res.current === v) stop(e.code === 4000 ? VOICE_ERR.idle : e.code === 1000 ? null : VOICE_ERR.drop); };
+      ws.onclose = (e) => { if (res.current === v) stop(e.code === 4000 ? VOICE_ERR.idle : e.code === 1000 ? null : v.err || VOICE_ERR.drop); };
       const { data: sub } = sb.auth.onAuthStateChange((event, s) => {
         if (event === 'TOKEN_REFRESHED' && s && ws.readyState === 1) ws.send(JSON.stringify({ type: 'auth', token: s.access_token }));
       });
@@ -2866,11 +2867,12 @@ function AgentView({ mobile, active = true }) {
   const loadTok = useRef(0), activeRef = useRef(null), abortRef = useRef(null);
   const [streaming, setStreaming] = useState(false);
   const [voiceOk, setVoiceOk] = useState(false);
+  const voiceSid = useRef(null);
   const [inputMode, setInputMode] = useState('text');
   useEffect(() => { agentJson('/api/agent/config').then((c) => setVoiceOk(!!(c && c.voice))).catch(() => {}); }, []);
   const voice = useVoice({ onEvent: (m) => {
     // adopt the session only once a turn is saved: the relay deletes a new session that never got one
-    if (m.type === 'ready') return;
+    if (m.type === 'ready') { voiceSid.current = m.sessionId; return; }
     if (m.type === 'saved') {
       activeRef.current = m.sessionId; setActiveId(m.sessionId);
       const now = new Date().toISOString();
@@ -2884,6 +2886,20 @@ function AgentView({ mobile, active = true }) {
   const stopVoice = voice.stop;
   // a dropped socket must not leave a turn looking "in progress"
   useEffect(() => { if (voice.status === 'idle') setMessages((ms) => (ms.some((x) => x.live) ? applyVoiceEvent(ms, { type: 'turn_done' }) : ms)); }, [voice.status]);
+  // voice stopped mid-turn in a new chat: the relay may still have saved it, so adopt the session if it exists
+  useEffect(() => {
+    const sid = voiceSid.current;
+    if (voice.status !== 'idle' || !sid) return;
+    voiceSid.current = null;
+    if (activeRef.current) return;
+    const tok = loadTok.current;
+    // the relay saves or deletes it right after the socket closes, so look a moment later
+    setTimeout(() => getSession(sid).then((s) => {
+      if (tok !== loadTok.current || activeRef.current || !s.messages.length) return;
+      useSession(s.id); setTitle(s.title || 'New chat');
+      setSessions((ss) => [{ id: s.id, title: s.title, created_at: s.created_at, updated_at: s.updated_at }, ...ss.filter((x) => x.id !== s.id)]);
+    }).catch(() => { /* never saved: the relay deleted it */ }), 1500);
+  }, [voice.status]);
   useEffect(() => { if (!active) stopVoice(); }, [active, stopVoice]);
 
   const [histErr, setHistErr] = useState(false);

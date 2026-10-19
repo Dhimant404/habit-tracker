@@ -5576,6 +5576,7 @@
           } catch (err) {
             return;
           }
+          if (m.type === 'error') v.err = m.message;
           if (m.type === 'ready') {
             v.ready = true;
             setStatus('listening');
@@ -5583,7 +5584,7 @@
           if (evRef.current) evRef.current(m);
         };
         ws.onclose = e => {
-          if (res.current === v) stop(e.code === 4000 ? VOICE_ERR.idle : e.code === 1000 ? null : VOICE_ERR.drop);
+          if (res.current === v) stop(e.code === 4000 ? VOICE_ERR.idle : e.code === 1000 ? null : v.err || VOICE_ERR.drop);
         };
         const {
           data: sub
@@ -6439,6 +6440,7 @@
       abortRef = useRef(null);
     const [streaming, setStreaming] = useState(false);
     const [voiceOk, setVoiceOk] = useState(false);
+    const voiceSid = useRef(null);
     const [inputMode, setInputMode] = useState('text');
     useEffect(() => {
       agentJson('/api/agent/config').then(c => setVoiceOk(!!(c && c.voice))).catch(() => {});
@@ -6446,7 +6448,10 @@
     const voice = useVoice({
       onEvent: m => {
         // adopt the session only once a turn is saved: the relay deletes a new session that never got one
-        if (m.type === 'ready') return;
+        if (m.type === 'ready') {
+          voiceSid.current = m.sessionId;
+          return;
+        }
         if (m.type === 'saved') {
           activeRef.current = m.sessionId;
           setActiveId(m.sessionId);
@@ -6472,6 +6477,26 @@
       if (voice.status === 'idle') setMessages(ms => ms.some(x => x.live) ? applyVoiceEvent(ms, {
         type: 'turn_done'
       }) : ms);
+    }, [voice.status]);
+    // voice stopped mid-turn in a new chat: the relay may still have saved it, so adopt the session if it exists
+    useEffect(() => {
+      const sid = voiceSid.current;
+      if (voice.status !== 'idle' || !sid) return;
+      voiceSid.current = null;
+      if (activeRef.current) return;
+      const tok = loadTok.current;
+      // the relay saves or deletes it right after the socket closes, so look a moment later
+      setTimeout(() => getSession(sid).then(s => {
+        if (tok !== loadTok.current || activeRef.current || !s.messages.length) return;
+        useSession(s.id);
+        setTitle(s.title || 'New chat');
+        setSessions(ss => [{
+          id: s.id,
+          title: s.title,
+          created_at: s.created_at,
+          updated_at: s.updated_at
+        }, ...ss.filter(x => x.id !== s.id)]);
+      }).catch(() => {/* never saved: the relay deleted it */}), 1500);
     }, [voice.status]);
     useEffect(() => {
       if (!active) stopVoice();
