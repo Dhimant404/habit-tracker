@@ -2421,10 +2421,10 @@ const listSessions = () => agentJson('/api/agent/sessions');
 const getSession = (id) => agentJson('/api/agent/sessions/' + encodeURIComponent(id));
 
 /* POST /chat and feed parsed SSE events to onEvent */
-async function streamChat({ sessionId, message, signal, onEvent }) {
+async function streamChat({ sessionId, message, model, signal, onEvent }) {
   const r = await agentFetch('/api/agent/chat', {
     method: 'POST', signal, headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId, message }),
+    body: JSON.stringify({ sessionId, message, ...(model && { model }) }),
   });
   if (!r.ok) throw new Error('chat ' + r.status);
   const reader = r.body.getReader(), dec = new TextDecoder();
@@ -2884,6 +2884,49 @@ function Composer({ onSend, onStop, streaming, mobile, onTalk, note }) {
   );
 }
 
+/* ChatGPT-style model menu: text models from the backend registry, plus the (fixed) voice model for reference */
+function ModelPicker({ models, value, onChange, voiceModel }) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const away = (e) => { if (wrap.current && !wrap.current.contains(e.target)) setOpen(false); };
+    const esc = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', away); document.addEventListener('touchstart', away); window.addEventListener('keydown', esc);
+    return () => { document.removeEventListener('mousedown', away); document.removeEventListener('touchstart', away); window.removeEventListener('keydown', esc); };
+  }, [open]);
+  const cur = models.find((m) => m.id === value) || models.find((m) => m.recommended) || models[0];
+  if (!cur) return null;
+  return (
+    <div ref={wrap} style={{ position: 'relative', flex: 'none' }}>
+      <button className="ag-pick" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        {cur.label}
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .2s ease' }}><path d="M6 9l6 6 6-6" /></svg>
+      </button>
+      {open && (
+        <div role="menu" aria-label="Model" className="ag-menu">
+          <div className="ag-menu-h">Chat</div>
+          {models.map((m) => (
+            <button key={m.id} role="menuitemradio" aria-checked={m.id === cur.id} className={'ag-mi' + (m.id === cur.id ? ' on' : '')}
+              onClick={() => { onChange(m.id); setOpen(false); }}>
+              <span className="ag-mi-t">{m.label}{m.recommended && <span className="ag-rec">Recommended</span>}</span>
+              <span className="ag-mi-b">{m.blurb}</span>
+              {m.id === cur.id && <svg className="ag-mi-c" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10" /></svg>}
+            </button>
+          ))}
+          {voiceModel && <>
+            <div className="ag-menu-h">Voice</div>
+            <div className="ag-mi static">
+              <span className="ag-mi-t">{voiceModel.label}<span className="ag-rec">Recommended</span></span>
+              <span className="ag-mi-b">{voiceModel.blurb}</span>
+            </div>
+          </>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const VOICE_STATE = {
   connecting: ['Connecting', 'Getting the mic ready'],
   listening: ['Listening', 'Go ahead, I\u2019m listening'],
@@ -2981,7 +3024,19 @@ function AgentView({ mobile, active = true }) {
   const [streaming, setStreaming] = useState(false);
   const [voiceOk, setVoiceOk] = useState(false);
   const voiceSid = useRef(null);
-  useEffect(() => { agentJson('/api/agent/config').then((c) => setVoiceOk(!!(c && c.voice))).catch(() => {}); }, []);
+  // models come from the backend registry; the pick is remembered per device
+  const [models, setModels] = useState([]);
+  const [voiceModel, setVoiceModel] = useState(null);
+  const [model, setModel] = useState(() => { try { return localStorage.getItem('agent.model'); } catch (e) { return null; } });
+  const pickModel = (id) => { setModel(id); try { localStorage.setItem('agent.model', id); } catch (e) { /* private mode */ } };
+  useEffect(() => {
+    agentJson('/api/agent/config').then((c) => {
+      setVoiceOk(!!(c && c.voice));
+      const list = (c && c.models) || [];
+      setModels(list); setVoiceModel((c && c.voiceModel) || null);
+      setModel((m) => (list.some((x) => x.id === m) ? m : (c && c.defaultModel) || null));
+    }).catch(() => {});
+  }, []);
   const voice = useVoice({ onEvent: (m) => {
     // adopt the session only once a turn is saved: the relay deletes a new session that never got one
     if (m.type === 'ready') { voiceSid.current = m.sessionId; return; }
@@ -3039,7 +3094,7 @@ function AgentView({ mobile, active = true }) {
     setStreaming(true);
     const patch = (f) => setMessages((ms) => ms.map((x) => (x.id === aid ? { ...x, ...f(x) } : x)));
     try {
-      await streamChat({ sessionId: activeRef.current || undefined, message: text, signal: ctl.signal, onEvent: ({ event, data }) => {
+      await streamChat({ sessionId: activeRef.current || undefined, message: text, model, signal: ctl.signal, onEvent: ({ event, data }) => {
         if (event === 'session') {
           useSession(data.sessionId); setTitle(data.title);
           const now = new Date().toISOString();
@@ -3097,6 +3152,7 @@ function AgentView({ mobile, active = true }) {
             <AgentIconBtn title="Show history" onClick={() => setSide(true)}>{'☰'}</AgentIconBtn>
             <AgentIconBtn title="New chat" onClick={newChat}>{'＋'}</AgentIconBtn>
           </>}
+          <ModelPicker models={models} value={model} onChange={pickModel} voiceModel={voiceOk ? voiceModel : null} />
           <span style={{ fontSize: 13, color: 'var(--fg-3)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>{title}</span>
         </div>
         {messages.length === 0 ? (
