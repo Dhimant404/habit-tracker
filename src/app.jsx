@@ -2693,8 +2693,9 @@ function AgentIconBtn({ title, onClick, children }) {
 }
 
 /* history sidebar: new chat + sessions grouped by day */
-function ChatHistory({ sessions, activeId, error, onNew, onPick, onHide }) {
+function ChatHistory({ sessions, activeId, error, onNew, onPick, onHide, onDelete }) {
   const groups = useMemo(() => groupSessions(sessions, new Date()), [sessions]);
+  const [confirming, setConfirming] = useState(null); // session id showing the inline delete confirm
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, height: '100%', minHeight: 0 }}>
       <div style={{ display: 'flex', gap: 8, marginBottom: 10, flex: 'none' }}>
@@ -2706,9 +2707,21 @@ function ChatHistory({ sessions, activeId, error, onNew, onPick, onHide }) {
         {groups.map((g) => (
           <div key={g.label}>
             <div style={{ fontSize: 10.5, letterSpacing: '.16em', textTransform: 'uppercase', color: 'var(--fg-3)', fontWeight: 700, margin: '10px 6px 4px', whiteSpace: 'nowrap' }}>{g.label}</div>
-            {g.items.map((s) => (
+            {g.items.map((s) => confirming === s.id ? (
+              <div key={s.id} className="ag-s on" style={{ cursor: 'default' }}>
+                <span style={{ flex: 1, minWidth: 0, color: 'var(--fg-1)' }}>Delete this chat?</span>
+                <button className="ag-mini danger" autoFocus onClick={() => { setConfirming(null); onDelete(s.id); }}>Delete</button>
+                <button className="ag-mini" onClick={() => setConfirming(null)}>Cancel</button>
+              </div>
+            ) : (
               <div key={s.id} role="button" tabIndex={0} onClick={() => onPick(s.id)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPick(s.id); } }}
-                className={'ag-s' + (s.id === activeId ? ' on' : '')} title={s.title}>{s.title}</div>
+                className={'ag-s' + (s.id === activeId ? ' on' : '')} title={s.title}>
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.title}</span>
+                <button className="ag-del" aria-label={'Delete chat: ' + s.title} title="Delete chat"
+                  onClick={(e) => { e.stopPropagation(); setConfirming(s.id); }} onKeyDown={(e) => e.stopPropagation()}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" /></svg>
+                </button>
+              </div>
             ))}
           </div>
         ))}
@@ -2745,14 +2758,6 @@ function ToolChip({ tool }) {
   );
 }
 
-function CopyBtn({ text }) {
-  const [done, setDone] = useState(false);
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(text); setDone(true); setTimeout(() => setDone(false), 1500); } catch (e) { /* clipboard blocked */ }
-  };
-  return <button onClick={copy} className="ag-act">{done ? '✓ Copied' : '⧉ Copy'}</button>;
-}
-
 function ChatThread({ messages }) {
   const box = useRef(null), stick = useRef(true);
   const onScroll = () => { const e = box.current; stick.current = e.scrollHeight - e.scrollTop - e.clientHeight <= 80; };
@@ -2777,7 +2782,6 @@ function ChatThread({ messages }) {
             {m.streaming && <span className="ag-caret" />}
             {m.status === 'stopped' && <div style={{ fontSize: 12, color: 'var(--fg-3)' }}>Stopped</div>}
             {m.status === 'error' && <div style={{ fontSize: 13, color: 'rgba(255,120,120,0.8)' }}>{'Something went wrong — try again'}</div>}
-            {!m.streaming && m.content && !m.status && <div style={{ display: 'flex', marginTop: 2 }}><CopyBtn text={m.content} /></div>}
           </div>
         ))}
       </div>
@@ -2984,8 +2988,16 @@ function AgentView({ mobile, active = true }) {
     } catch (e) { /* leave current chat as is */ }
   };
 
+  const removeChat = async (id) => {
+    try {
+      const r = await agentFetch('/api/agent/sessions/' + encodeURIComponent(id), { method: 'DELETE' });
+      if (!r.ok && r.status !== 404) return; // 404: already gone, drop it anyway
+    } catch (e) { return; }
+    setSessions((ss) => ss.filter((x) => x.id !== id));
+    if (activeRef.current === id) newChat();
+  };
   const sidebar = (
-    <ChatHistory sessions={sessions} activeId={activeId} error={histErr} onNew={newChat} onPick={pick} onHide={() => setSide(false)} />
+    <ChatHistory sessions={sessions} activeId={activeId} error={histErr} onNew={newChat} onPick={pick} onHide={() => setSide(false)} onDelete={removeChat} />
   );
   return (
     <div style={{ flex: 1, minHeight: 0, display: 'flex', gap: 16, position: 'relative', width: '100%' }}>
