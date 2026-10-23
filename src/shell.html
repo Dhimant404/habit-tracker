@@ -147,14 +147,16 @@
     /* voice ring: transform/opacity only; static when idle */
     .vc-bars { display: flex; align-items: center; gap: 3px; height: 26px; flex: none; }
     .vc-bars i { display: block; width: 4px; height: 100%; border-radius: 4px; background: var(--teal); transform: scaleY(.25); }
-    .vc-bars.listening i { animation: vcBar 1.6s ease-in-out infinite; }
-    .vc-bars.speaking i { animation: vcBar .65s ease-in-out infinite; }
+    .vc-bars.listening i, .vc-bars.speaking i { transform: scaleY(.12); } /* driven by the live audio level from JS */
     .vc-bars.thinking i, .vc-bars.connecting i { animation: vcDot 1.2s ease-in-out infinite; }
     .vc-bars.paused i { transform: scaleY(.18); opacity: .4; }
     .vc-bars i:nth-child(2) { animation-delay: .12s; } .vc-bars i:nth-child(3) { animation-delay: .24s; } .vc-bars i:nth-child(4) { animation-delay: .36s; } .vc-bars i:nth-child(5) { animation-delay: .48s; }
-    @keyframes vcBar { 0%, 100% { transform: scaleY(.25); } 50% { transform: scaleY(1); } }
     @keyframes vcDot { 0%, 100% { transform: scaleY(.18); opacity: .35; } 50% { transform: scaleY(.18); opacity: 1; } }
-    @media (prefers-reduced-motion: reduce) { .ag-caret, .vc-bars i { animation: none !important; } .vc-bars:not(.paused) i { transform: scaleY(.6); } }
+    .ag-dict { width: 34px; height: 34px; flex: none; border-radius: 999px; border: none; background: transparent; color: var(--fg-2); display: grid; place-items: center; cursor: pointer; }
+    .ag-dict:hover { color: var(--fg-1); background: rgba(255,255,255,0.06); }
+    .ag-dict.on { color: #04140d; background: var(--teal); animation: dictPulse 1.4s ease-in-out infinite; }
+    @keyframes dictPulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--teal) 45%, transparent); } 50% { box-shadow: 0 0 0 7px color-mix(in oklab, var(--teal) 0%, transparent); } }
+    @media (prefers-reduced-motion: reduce) { .ag-caret, .vc-bars i, .ag-dict.on { animation: none !important; } .vc-bars.thinking i, .vc-bars.connecting i { transform: scaleY(.4); } }
     /* Press feedback on every button */
     button { transition: transform 0.08s var(--ease); }
     button:active:not(:disabled) { transform: scale(0.97); }

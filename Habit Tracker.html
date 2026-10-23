@@ -147,14 +147,16 @@
     /* voice ring: transform/opacity only; static when idle */
     .vc-bars { display: flex; align-items: center; gap: 3px; height: 26px; flex: none; }
     .vc-bars i { display: block; width: 4px; height: 100%; border-radius: 4px; background: var(--teal); transform: scaleY(.25); }
-    .vc-bars.listening i { animation: vcBar 1.6s ease-in-out infinite; }
-    .vc-bars.speaking i { animation: vcBar .65s ease-in-out infinite; }
+    .vc-bars.listening i, .vc-bars.speaking i { transform: scaleY(.12); } /* driven by the live audio level from JS */
     .vc-bars.thinking i, .vc-bars.connecting i { animation: vcDot 1.2s ease-in-out infinite; }
     .vc-bars.paused i { transform: scaleY(.18); opacity: .4; }
     .vc-bars i:nth-child(2) { animation-delay: .12s; } .vc-bars i:nth-child(3) { animation-delay: .24s; } .vc-bars i:nth-child(4) { animation-delay: .36s; } .vc-bars i:nth-child(5) { animation-delay: .48s; }
-    @keyframes vcBar { 0%, 100% { transform: scaleY(.25); } 50% { transform: scaleY(1); } }
     @keyframes vcDot { 0%, 100% { transform: scaleY(.18); opacity: .35; } 50% { transform: scaleY(.18); opacity: 1; } }
-    @media (prefers-reduced-motion: reduce) { .ag-caret, .vc-bars i { animation: none !important; } .vc-bars:not(.paused) i { transform: scaleY(.6); } }
+    .ag-dict { width: 34px; height: 34px; flex: none; border-radius: 999px; border: none; background: transparent; color: var(--fg-2); display: grid; place-items: center; cursor: pointer; }
+    .ag-dict:hover { color: var(--fg-1); background: rgba(255,255,255,0.06); }
+    .ag-dict.on { color: #04140d; background: var(--teal); animation: dictPulse 1.4s ease-in-out infinite; }
+    @keyframes dictPulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--teal) 45%, transparent); } 50% { box-shadow: 0 0 0 7px color-mix(in oklab, var(--teal) 0%, transparent); } }
+    @media (prefers-reduced-motion: reduce) { .ag-caret, .vc-bars i, .ag-dict.on { animation: none !important; } .vc-bars.thinking i, .vc-bars.connecting i { transform: scaleY(.4); } }
     /* Press feedback on every button */
     button { transition: transform 0.08s var(--ease); }
     button:active:not(:disabled) { transform: scale(0.97); }
@@ -5509,10 +5511,14 @@
       audio.setAttribute('playsinline', '');
       audio.srcObject = dest.stream; // <audio> route: the path AEC references
       audio.play().catch(() => {});
+      const outAn = out.createAnalyser();
+      outAn.fftSize = 512;
+      outAn.connect(dest); // tap the reply audio for the level bars
       const v = {
         mic,
         out,
         dest,
+        outAn,
         audio,
         srcs: new Set(),
         next: 0
@@ -5551,7 +5557,11 @@
         const node = new AudioWorkletNode(mic, 'mic');
         const mute = mic.createGain();
         mute.gain.value = 0; // keeps the graph pulled without echoing the mic
-        mic.createMediaStreamSource(v.stream).connect(node);
+        const src = mic.createMediaStreamSource(v.stream);
+        v.micAn = mic.createAnalyser();
+        v.micAn.fftSize = 512;
+        src.connect(node);
+        src.connect(v.micAn);
         node.connect(mute);
         mute.connect(mic.destination);
         const play = buf => {
@@ -5561,7 +5571,7 @@
           b.copyToChannel(f, 0);
           const s = out.createBufferSource();
           s.buffer = b;
-          s.connect(dest);
+          s.connect(v.outAn);
           const t = Math.max(out.currentTime + 0.02, v.next);
           s.start(t);
           v.next = t + b.duration;
@@ -5633,6 +5643,19 @@
         stop();
       };
     }, [stop]);
+
+    // RMS loudness (0..~1) of the mic ('micAn') or the agent's voice ('outAn') right now
+    const levelBuf = useRef(null);
+    const level = useCallback(which => {
+      const an = res.current[which];
+      if (!an) return 0;
+      let b = levelBuf.current;
+      if (!b || b.length !== an.fftSize) b = levelBuf.current = new Float32Array(an.fftSize);
+      an.getFloatTimeDomainData(b);
+      let sum = 0;
+      for (let i = 0; i < b.length; i++) sum += b[i] * b[i];
+      return Math.sqrt(sum / b.length);
+    }, []);
     return {
       status,
       error,
@@ -5640,7 +5663,8 @@
       startedAt,
       start,
       stop,
-      toggleMute
+      toggleMute,
+      level
     };
   }
 
@@ -6261,6 +6285,7 @@
   }));
 
   /* onTalk (voice-allowlisted users only): an empty box shows Talk where Send would be */
+  const SpeechRec = typeof window !== 'undefined' ? window.SpeechRecognition || window.webkitSpeechRecognition : null;
   function Composer({
     onSend,
     onStop,
@@ -6277,8 +6302,51 @@
       e.style.height = Math.min(e.scrollHeight, 200) + 'px';
     }, [text]);
     const can = !streaming && text.trim().length > 0;
+
+    // dictation: speech -> text in the box, nothing is sent until you press Send
+    const [dictating, setDictating] = useState(false);
+    const [dictErr, setDictErr] = useState(null);
+    const rec = useRef(null),
+      dictBase = useRef('');
+    const stopDictation = () => {
+      if (rec.current) rec.current.stop();
+    };
+    const startDictation = () => {
+      if (!SpeechRec || rec.current) return;
+      const r = new SpeechRec();
+      r.continuous = true;
+      r.interimResults = true;
+      r.lang = navigator.language || 'en-US';
+      dictBase.current = text.trim() ? text.replace(/\s*$/, ' ') : '';
+      r.onresult = e => {
+        let said = '';
+        for (let i = 0; i < e.results.length; i++) said += e.results[i][0].transcript;
+        setText(dictBase.current + said.trimStart());
+      };
+      r.onerror = e => {
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') setDictErr(VOICE_ERR.mic);
+      };
+      r.onend = () => {
+        rec.current = null;
+        setDictating(false);
+        if (ta.current) ta.current.focus();
+      };
+      rec.current = r;
+      setDictErr(null);
+      setDictating(true);
+      try {
+        r.start();
+      } catch (err) {
+        rec.current = null;
+        setDictating(false);
+      }
+    };
+    useEffect(() => () => {
+      if (rec.current) rec.current.abort();
+    }, []);
     const send = () => {
       if (!can) return;
+      if (rec.current) rec.current.abort();
       onSend(text.trim());
       setText('');
     };
@@ -6308,8 +6376,11 @@
       rows: 1,
       value: text,
       maxLength: 4000,
-      placeholder: 'Ask about your sleep, strain or workouts…',
-      onChange: e => setText(e.target.value),
+      placeholder: dictating ? 'Listening…' : 'Ask about your sleep, strain or workouts…',
+      onChange: e => {
+        stopDictation();
+        setText(e.target.value);
+      },
       onKeyDown: e => {
         if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
           e.preventDefault();
@@ -6330,7 +6401,13 @@
         padding: '6px 0',
         maxHeight: 200
       }
-    }), streaming ? /*#__PURE__*/React.createElement("button", {
+    }), SpeechRec && !streaming && /*#__PURE__*/React.createElement("button", {
+      onClick: dictating ? stopDictation : startDictation,
+      className: 'ag-dict' + (dictating ? ' on' : ''),
+      "aria-pressed": dictating,
+      "aria-label": dictating ? 'Stop dictation' : 'Dictate',
+      title: dictating ? 'Stop dictation' : 'Dictate'
+    }, MIC_ICON), streaming ? /*#__PURE__*/React.createElement("button", {
       onClick: onStop,
       title: "Stop",
       "aria-label": "Stop",
@@ -6346,7 +6423,10 @@
         fontSize: 11
       }
     }, '■') : onTalk && !text.trim() ? /*#__PURE__*/React.createElement("button", {
-      onClick: onTalk,
+      onClick: () => {
+        if (rec.current) rec.current.abort();
+        onTalk();
+      },
       title: "Talk",
       "aria-label": "Start a voice conversation",
       className: "auth-cta",
@@ -6387,11 +6467,11 @@
     }, '↑')), /*#__PURE__*/React.createElement("div", {
       style: {
         textAlign: 'center',
-        fontSize: note ? 12 : 11,
-        color: note === VOICE_ERR.mic ? 'rgba(255,120,120,0.85)' : 'var(--fg-3)',
+        fontSize: note || dictErr ? 12 : 11,
+        color: (note || dictErr) === VOICE_ERR.mic ? 'rgba(255,120,120,0.85)' : 'var(--fg-3)',
         marginTop: 8
       }
-    }, note || (onTalk ? 'Enter to send · tap Talk to say it out loud' : 'Enter to send · Shift+Enter for a new line')));
+    }, dictErr || note || (dictating ? 'Dictating \u2014 tap the mic to stop, then edit and send' : onTalk ? 'Enter to send \u00b7 tap Talk to say it out loud' : 'Enter to send \u00b7 Shift+Enter for a new line')));
   }
   const VOICE_STATE = {
     connecting: ['Connecting', 'Getting the mic ready'],
@@ -6406,9 +6486,36 @@
     muted,
     startedAt,
     onMute,
-    onEnd
+    onEnd,
+    level
   }) {
     const [now, setNow] = useState(Date.now());
+    // bars follow the real sound: your mic while listening, the agent's voice while speaking, flat in silence.
+    // Direct style writes per frame, no re-renders.
+    const barEls = useRef([]);
+    useEffect(() => {
+      const els = barEls.current;
+      if (!level || status !== 'listening' && status !== 'speaking') return undefined;
+      const SHAPE = [0.5, 0.8, 1, 0.75, 0.55];
+      let raf = 0,
+        cur = 0;
+      const tick = () => {
+        const target = status === 'speaking' ? level('outAn') * 4 : muted ? 0 : level('micAn') * 7;
+        cur += (Math.min(1, target) - cur) * (target > cur ? 0.5 : 0.18); // fast attack, slow release
+        const t = performance.now() / 120;
+        els.forEach((e, i) => {
+          if (e) e.style.transform = 'scaleY(' + Math.max(0.12, Math.min(1, cur * SHAPE[i] * (0.82 + 0.18 * Math.sin(t + i * 1.9)))).toFixed(3) + ')';
+        });
+        raf = requestAnimationFrame(tick);
+      };
+      raf = requestAnimationFrame(tick);
+      return () => {
+        cancelAnimationFrame(raf);
+        els.forEach(e => {
+          if (e) e.style.transform = '';
+        });
+      };
+    }, [status, muted, level]);
     useEffect(() => {
       const t = setInterval(() => setNow(Date.now()), 1000);
       return () => clearInterval(t);
@@ -6440,7 +6547,12 @@
     }, /*#__PURE__*/React.createElement("div", {
       className: 'vc-bars ' + (paused ? 'paused' : status),
       "aria-hidden": "true"
-    }, /*#__PURE__*/React.createElement("i", null), /*#__PURE__*/React.createElement("i", null), /*#__PURE__*/React.createElement("i", null), /*#__PURE__*/React.createElement("i", null), /*#__PURE__*/React.createElement("i", null)), /*#__PURE__*/React.createElement("div", {
+    }, [0, 1, 2, 3, 4].map(i => /*#__PURE__*/React.createElement("i", {
+      key: i,
+      ref: el => {
+        barEls.current[i] = el;
+      }
+    }))), /*#__PURE__*/React.createElement("div", {
       style: {
         flex: 1,
         minWidth: 0,
@@ -6887,7 +6999,8 @@
       muted: voice.muted,
       startedAt: voice.startedAt,
       onMute: voice.toggleMute,
-      onEnd: () => stopVoice()
+      onEnd: () => stopVoice(),
+      level: voice.level
     }) : /*#__PURE__*/React.createElement(Composer, {
       onSend: send,
       onStop: stop,

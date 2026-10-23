@@ -2498,7 +2498,8 @@ function useVoice({ onEvent }) {
     const audio = new Audio();
     audio.autoplay = true; audio.setAttribute('playsinline', ''); audio.srcObject = dest.stream; // <audio> route: the path AEC references
     audio.play().catch(() => {});
-    const v = { mic, out, dest, audio, srcs: new Set(), next: 0 };
+    const outAn = out.createAnalyser(); outAn.fftSize = 512; outAn.connect(dest); // tap the reply audio for the level bars
+    const v = { mic, out, dest, outAn, audio, srcs: new Set(), next: 0 };
     res.current = v;
     try {
       v.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
@@ -2514,14 +2515,16 @@ function useVoice({ onEvent }) {
       if (res.current !== v) return;
       const node = new AudioWorkletNode(mic, 'mic');
       const mute = mic.createGain(); mute.gain.value = 0; // keeps the graph pulled without echoing the mic
-      mic.createMediaStreamSource(v.stream).connect(node); node.connect(mute); mute.connect(mic.destination);
+      const src = mic.createMediaStreamSource(v.stream);
+      v.micAn = mic.createAnalyser(); v.micAn.fftSize = 512;
+      src.connect(node); src.connect(v.micAn); node.connect(mute); mute.connect(mic.destination);
 
       const play = (buf) => {
         const f = pcm16ToFloat(buf.byteLength % 2 ? buf.slice(0, -1) : buf);
         if (!f.length) return;
         const b = out.createBuffer(1, f.length, 24000); // browser resamples to the context rate
         b.copyToChannel(f, 0);
-        const s = out.createBufferSource(); s.buffer = b; s.connect(dest);
+        const s = out.createBufferSource(); s.buffer = b; s.connect(v.outAn);
         const t = Math.max(out.currentTime + 0.02, v.next);
         s.start(t); v.next = t + b.duration;
         v.srcs.add(s); s.onended = () => v.srcs.delete(s);
@@ -2560,7 +2563,20 @@ function useVoice({ onEvent }) {
     return () => { document.removeEventListener('visibilitychange', h); stop(); };
   }, [stop]);
 
-  return { status, error, muted, startedAt, start, stop, toggleMute };
+  // RMS loudness (0..~1) of the mic ('micAn') or the agent's voice ('outAn') right now
+  const levelBuf = useRef(null);
+  const level = useCallback((which) => {
+    const an = res.current[which];
+    if (!an) return 0;
+    let b = levelBuf.current;
+    if (!b || b.length !== an.fftSize) b = levelBuf.current = new Float32Array(an.fftSize);
+    an.getFloatTimeDomainData(b);
+    let sum = 0;
+    for (let i = 0; i < b.length; i++) sum += b[i] * b[i];
+    return Math.sqrt(sum / b.length);
+  }, []);
+
+  return { status, error, muted, startedAt, start, stop, toggleMute, level };
 }
 
 // PURE-BEGIN
@@ -2794,23 +2810,54 @@ const MIC_ICON = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" str
 const MIC_OFF_ICON = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M3 3l18 18M9 9v2a3 3 0 0 0 5 2.2M15 9.3V6a3 3 0 0 0-5.7-1.3M5 11a7 7 0 0 0 11.5 5.3M19 11a7 7 0 0 1-.6 2.8M12 18v3" /></svg>;
 
 /* onTalk (voice-allowlisted users only): an empty box shows Talk where Send would be */
+const SpeechRec = typeof window !== 'undefined' ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
+
 function Composer({ onSend, onStop, streaming, mobile, onTalk, note }) {
   const [text, setText] = useState('');
   const ta = useRef(null);
   useLayoutEffect(() => { const e = ta.current; e.style.height = 'auto'; e.style.height = Math.min(e.scrollHeight, 200) + 'px'; }, [text]);
   const can = !streaming && text.trim().length > 0;
-  const send = () => { if (!can) return; onSend(text.trim()); setText(''); };
+
+  // dictation: speech -> text in the box, nothing is sent until you press Send
+  const [dictating, setDictating] = useState(false);
+  const [dictErr, setDictErr] = useState(null);
+  const rec = useRef(null), dictBase = useRef('');
+  const stopDictation = () => { if (rec.current) rec.current.stop(); };
+  const startDictation = () => {
+    if (!SpeechRec || rec.current) return;
+    const r = new SpeechRec();
+    r.continuous = true; r.interimResults = true; r.lang = navigator.language || 'en-US';
+    dictBase.current = text.trim() ? text.replace(/\s*$/, ' ') : '';
+    r.onresult = (e) => {
+      let said = '';
+      for (let i = 0; i < e.results.length; i++) said += e.results[i][0].transcript;
+      setText(dictBase.current + said.trimStart());
+    };
+    r.onerror = (e) => { if (e.error === 'not-allowed' || e.error === 'service-not-allowed') setDictErr(VOICE_ERR.mic); };
+    r.onend = () => { rec.current = null; setDictating(false); if (ta.current) ta.current.focus(); };
+    rec.current = r; setDictErr(null); setDictating(true);
+    try { r.start(); } catch (err) { rec.current = null; setDictating(false); }
+  };
+  useEffect(() => () => { if (rec.current) rec.current.abort(); }, []);
+
+  const send = () => { if (!can) return; if (rec.current) rec.current.abort(); onSend(text.trim()); setText(''); };
   return (
     <div style={{ maxWidth: 720, width: '100%', margin: '0 auto', padding: '8px 24px 0', flex: 'none', boxSizing: 'border-box' }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, padding: '10px 12px 10px 18px', borderRadius: 24, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.16)', minHeight: 56, boxSizing: 'border-box' }}>
-        <textarea ref={ta} rows={1} value={text} maxLength={4000} placeholder={'Ask about your sleep, strain or workouts…'}
-          onChange={(e) => setText(e.target.value)}
+        <textarea ref={ta} rows={1} value={text} maxLength={4000} placeholder={dictating ? 'Listening…' : 'Ask about your sleep, strain or workouts…'}
+          onChange={(e) => { stopDictation(); setText(e.target.value); }}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); } }}
           style={{ flex: 1, minWidth: 0, resize: 'none', border: 'none', outline: 'none', background: 'transparent', color: 'var(--fg-1)', fontFamily: 'var(--font-sans)', fontSize: mobile ? 16 : 15, lineHeight: 1.5, padding: '6px 0', maxHeight: 200 }} />
+        {SpeechRec && !streaming && (
+          <button onClick={dictating ? stopDictation : startDictation} className={'ag-dict' + (dictating ? ' on' : '')}
+            aria-pressed={dictating} aria-label={dictating ? 'Stop dictation' : 'Dictate'} title={dictating ? 'Stop dictation' : 'Dictate'}>
+            {MIC_ICON}
+          </button>
+        )}
         {streaming ? (
           <button onClick={onStop} title="Stop" aria-label="Stop" style={{ width: 34, height: 34, flex: 'none', borderRadius: 999, border: 'none', cursor: 'pointer', background: '#fff', color: '#000', fontSize: 11 }}>{'■'}</button>
         ) : onTalk && !text.trim() ? (
-          <button onClick={onTalk} title="Talk" aria-label="Start a voice conversation" className="auth-cta"
+          <button onClick={() => { if (rec.current) rec.current.abort(); onTalk(); }} title="Talk" aria-label="Start a voice conversation" className="auth-cta"
             style={{ height: 34, flex: 'none', padding: '0 13px 0 11px', borderRadius: 999, border: 'none', cursor: 'pointer', background: 'var(--teal)', color: '#04140d', display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: 'var(--font-sans)', fontWeight: 800, fontSize: 13 }}>
             {WAVE_ICON}Talk
           </button>
@@ -2818,8 +2865,9 @@ function Composer({ onSend, onStop, streaming, mobile, onTalk, note }) {
           <button onClick={send} disabled={!can} title="Send" aria-label="Send" style={{ width: 34, height: 34, flex: 'none', borderRadius: 999, border: 'none', cursor: can ? 'pointer' : 'default', background: 'var(--teal)', color: '#04140d', fontWeight: 900, fontSize: 16, opacity: can ? 1 : 0.35 }}>{'↑'}</button>
         )}
       </div>
-      <div style={{ textAlign: 'center', fontSize: note ? 12 : 11, color: note === VOICE_ERR.mic ? 'rgba(255,120,120,0.85)' : 'var(--fg-3)', marginTop: 8 }}>
-        {note || (onTalk ? 'Enter to send · tap Talk to say it out loud' : 'Enter to send · Shift+Enter for a new line')}
+      <div style={{ textAlign: 'center', fontSize: (note || dictErr) ? 12 : 11, color: (note || dictErr) === VOICE_ERR.mic ? 'rgba(255,120,120,0.85)' : 'var(--fg-3)', marginTop: 8 }}>
+        {dictErr || note || (dictating ? 'Dictating \u2014 tap the mic to stop, then edit and send'
+          : onTalk ? 'Enter to send \u00b7 tap Talk to say it out loud' : 'Enter to send \u00b7 Shift+Enter for a new line')}
       </div>
     </div>
   );
@@ -2833,8 +2881,28 @@ const VOICE_STATE = {
 };
 
 /* the composer's voice form: level bars, state, timer, mute, End */
-function VoiceBar({ status, muted, startedAt, onMute, onEnd }) {
+function VoiceBar({ status, muted, startedAt, onMute, onEnd, level }) {
   const [now, setNow] = useState(Date.now());
+  // bars follow the real sound: your mic while listening, the agent's voice while speaking, flat in silence.
+  // Direct style writes per frame, no re-renders.
+  const barEls = useRef([]);
+  useEffect(() => {
+    const els = barEls.current;
+    if (!level || (status !== 'listening' && status !== 'speaking')) return undefined;
+    const SHAPE = [0.5, 0.8, 1, 0.75, 0.55];
+    let raf = 0, cur = 0;
+    const tick = () => {
+      const target = status === 'speaking' ? level('outAn') * 4 : muted ? 0 : level('micAn') * 7;
+      cur += (Math.min(1, target) - cur) * (target > cur ? 0.5 : 0.18); // fast attack, slow release
+      const t = performance.now() / 120;
+      els.forEach((e, i) => {
+        if (e) e.style.transform = 'scaleY(' + Math.max(0.12, Math.min(1, cur * SHAPE[i] * (0.82 + 0.18 * Math.sin(t + i * 1.9)))).toFixed(3) + ')';
+      });
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => { cancelAnimationFrame(raf); els.forEach((e) => { if (e) e.style.transform = ''; }); };
+  }, [status, muted, level]);
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
   const secs = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
   const paused = muted && status === 'listening';
@@ -2842,7 +2910,9 @@ function VoiceBar({ status, muted, startedAt, onMute, onEnd }) {
   return (
     <div style={{ maxWidth: 720, width: '100%', margin: '0 auto', padding: '8px 24px 0', flex: 'none', boxSizing: 'border-box' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 10px 10px 18px', borderRadius: 28, minHeight: 56, boxSizing: 'border-box', background: 'color-mix(in oklab, var(--teal) 7%, transparent)', border: '1px solid color-mix(in oklab, var(--teal) 38%, transparent)' }}>
-        <div className={'vc-bars ' + (paused ? 'paused' : status)} aria-hidden="true"><i /><i /><i /><i /><i /></div>
+        <div className={'vc-bars ' + (paused ? 'paused' : status)} aria-hidden="true">
+          {[0, 1, 2, 3, 4].map((i) => <i key={i} ref={(el) => { barEls.current[i] = el; }} />)}
+        </div>
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           <div aria-live="polite" style={{ fontSize: 12.5, fontWeight: 800, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--teal)' }}>{label}</div>
           <div style={{ fontSize: 12.5, color: 'var(--fg-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{hint}</div>
@@ -3021,7 +3091,7 @@ function AgentView({ mobile, active = true }) {
           </div>
         ) : <ChatThread messages={messages} />}
         {voice.status !== 'idle' ? (
-          <VoiceBar status={voice.status} muted={voice.muted} startedAt={voice.startedAt} onMute={voice.toggleMute} onEnd={() => stopVoice()} />
+          <VoiceBar status={voice.status} muted={voice.muted} startedAt={voice.startedAt} onMute={voice.toggleMute} onEnd={() => stopVoice()} level={voice.level} />
         ) : <Composer onSend={send} onStop={stop} streaming={streaming} mobile={mobile} note={voice.error}
               onTalk={voiceOk ? () => { stop(); voice.start(activeRef.current); } : null} />}
       </div>
