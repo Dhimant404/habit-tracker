@@ -2908,8 +2908,9 @@ function VoiceBar({ status, muted, startedAt, onMute, onEnd, level }) {
   const paused = muted && status === 'listening';
   const [label, hint] = paused ? ['Muted', 'Your mic is off \u2014 tap the mic to unmute'] : (VOICE_STATE[status] || VOICE_STATE.connecting);
   return (
-    <div style={{ maxWidth: 720, width: '100%', margin: '0 auto', padding: '8px 24px 0', flex: 'none', boxSizing: 'border-box' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 10px 10px 18px', borderRadius: 28, minHeight: 56, boxSizing: 'border-box', background: 'color-mix(in oklab, var(--teal) 7%, transparent)', border: '1px solid color-mix(in oklab, var(--teal) 38%, transparent)' }}>
+    // red until the session is live, then the accent; --teal is re-scoped so bars, label and border all follow
+    <div style={{ maxWidth: 720, width: '100%', margin: '0 auto', padding: '8px 24px 0', flex: 'none', boxSizing: 'border-box', ...(status === 'connecting' && { '--teal': '#FF5A5A' }) }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 10px 10px 18px', borderRadius: 28, transition: 'background .3s ease, border-color .3s ease', minHeight: 56, boxSizing: 'border-box', background: 'color-mix(in oklab, var(--teal) 7%, transparent)', border: '1px solid color-mix(in oklab, var(--teal) 38%, transparent)' }}>
         <div className={'vc-bars ' + (paused ? 'paused' : status)} aria-hidden="true">
           {[0, 1, 2, 3, 4].map((i) => <i key={i} ref={(el) => { barEls.current[i] = el; }} />)}
         </div>

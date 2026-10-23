@@ -6523,116 +6523,124 @@
     const secs = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
     const paused = muted && status === 'listening';
     const [label, hint] = paused ? ['Muted', 'Your mic is off \u2014 tap the mic to unmute'] : VOICE_STATE[status] || VOICE_STATE.connecting;
-    return /*#__PURE__*/React.createElement("div", {
-      style: {
-        maxWidth: 720,
-        width: '100%',
-        margin: '0 auto',
-        padding: '8px 24px 0',
-        flex: 'none',
-        boxSizing: 'border-box'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: 'flex',
-        alignItems: 'center',
-        gap: 12,
-        padding: '10px 10px 10px 18px',
-        borderRadius: 28,
-        minHeight: 56,
-        boxSizing: 'border-box',
-        background: 'color-mix(in oklab, var(--teal) 7%, transparent)',
-        border: '1px solid color-mix(in oklab, var(--teal) 38%, transparent)'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      className: 'vc-bars ' + (paused ? 'paused' : status),
-      "aria-hidden": "true"
-    }, [0, 1, 2, 3, 4].map(i => /*#__PURE__*/React.createElement("i", {
-      key: i,
-      ref: el => {
-        barEls.current[i] = el;
-      }
-    }))), /*#__PURE__*/React.createElement("div", {
-      style: {
-        flex: 1,
-        minWidth: 0,
-        display: 'flex',
-        flexDirection: 'column'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      "aria-live": "polite",
-      style: {
-        fontSize: 12.5,
-        fontWeight: 800,
-        letterSpacing: '.1em',
-        textTransform: 'uppercase',
-        color: 'var(--teal)'
-      }
-    }, label), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12.5,
-        color: 'var(--fg-3)',
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis'
-      }
-    }, hint)), /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontVariantNumeric: 'tabular-nums',
-        fontSize: 13,
-        fontWeight: 600,
-        color: 'var(--fg-3)'
-      }
-    }, Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0')), /*#__PURE__*/React.createElement("button", {
-      onClick: onMute,
-      className: "ag-ico",
-      "aria-pressed": muted,
-      "aria-label": muted ? 'Unmute microphone' : 'Mute microphone',
-      title: muted ? 'Unmute' : 'Mute',
-      style: muted ? {
-        background: 'rgba(255,90,90,0.18)',
-        borderColor: 'rgba(255,90,90,0.4)',
-        color: '#fff'
-      } : undefined
-    }, muted ? MIC_OFF_ICON : MIC_ICON), /*#__PURE__*/React.createElement("button", {
-      onClick: onEnd,
-      "aria-label": "End voice conversation",
-      className: "auth-cta",
-      style: {
-        height: 40,
-        flex: 'none',
-        padding: '0 15px',
-        borderRadius: 999,
-        border: 'none',
-        cursor: 'pointer',
-        background: '#fff',
-        color: '#000',
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        fontFamily: 'var(--font-sans)',
-        fontWeight: 800,
-        fontSize: 13
-      }
-    }, /*#__PURE__*/React.createElement("svg", {
-      width: "13",
-      height: "13",
-      viewBox: "0 0 24 24",
-      fill: "none",
-      stroke: "currentColor",
-      strokeWidth: "2.8",
-      strokeLinecap: "round",
-      "aria-hidden": "true"
-    }, /*#__PURE__*/React.createElement("path", {
-      d: "M6 6l12 12M18 6L6 18"
-    })), "End")), /*#__PURE__*/React.createElement("div", {
-      style: {
-        textAlign: 'center',
-        fontSize: 11,
-        color: 'var(--fg-3)',
-        marginTop: 8
-      }
-    }, "Everything said here is saved to this chat, so you can switch back to typing any time"));
+    return (
+      /*#__PURE__*/
+      // red until the session is live, then the accent; --teal is re-scoped so bars, label and border all follow
+      React.createElement("div", {
+        style: {
+          maxWidth: 720,
+          width: '100%',
+          margin: '0 auto',
+          padding: '8px 24px 0',
+          flex: 'none',
+          boxSizing: 'border-box',
+          ...(status === 'connecting' && {
+            '--teal': '#FF5A5A'
+          })
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '10px 10px 10px 18px',
+          borderRadius: 28,
+          transition: 'background .3s ease, border-color .3s ease',
+          minHeight: 56,
+          boxSizing: 'border-box',
+          background: 'color-mix(in oklab, var(--teal) 7%, transparent)',
+          border: '1px solid color-mix(in oklab, var(--teal) 38%, transparent)'
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        className: 'vc-bars ' + (paused ? 'paused' : status),
+        "aria-hidden": "true"
+      }, [0, 1, 2, 3, 4].map(i => /*#__PURE__*/React.createElement("i", {
+        key: i,
+        ref: el => {
+          barEls.current[i] = el;
+        }
+      }))), /*#__PURE__*/React.createElement("div", {
+        style: {
+          flex: 1,
+          minWidth: 0,
+          display: 'flex',
+          flexDirection: 'column'
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        "aria-live": "polite",
+        style: {
+          fontSize: 12.5,
+          fontWeight: 800,
+          letterSpacing: '.1em',
+          textTransform: 'uppercase',
+          color: 'var(--teal)'
+        }
+      }, label), /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 12.5,
+          color: 'var(--fg-3)',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis'
+        }
+      }, hint)), /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontVariantNumeric: 'tabular-nums',
+          fontSize: 13,
+          fontWeight: 600,
+          color: 'var(--fg-3)'
+        }
+      }, Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0')), /*#__PURE__*/React.createElement("button", {
+        onClick: onMute,
+        className: "ag-ico",
+        "aria-pressed": muted,
+        "aria-label": muted ? 'Unmute microphone' : 'Mute microphone',
+        title: muted ? 'Unmute' : 'Mute',
+        style: muted ? {
+          background: 'rgba(255,90,90,0.18)',
+          borderColor: 'rgba(255,90,90,0.4)',
+          color: '#fff'
+        } : undefined
+      }, muted ? MIC_OFF_ICON : MIC_ICON), /*#__PURE__*/React.createElement("button", {
+        onClick: onEnd,
+        "aria-label": "End voice conversation",
+        className: "auth-cta",
+        style: {
+          height: 40,
+          flex: 'none',
+          padding: '0 15px',
+          borderRadius: 999,
+          border: 'none',
+          cursor: 'pointer',
+          background: '#fff',
+          color: '#000',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          fontFamily: 'var(--font-sans)',
+          fontWeight: 800,
+          fontSize: 13
+        }
+      }, /*#__PURE__*/React.createElement("svg", {
+        width: "13",
+        height: "13",
+        viewBox: "0 0 24 24",
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: "2.8",
+        strokeLinecap: "round",
+        "aria-hidden": "true"
+      }, /*#__PURE__*/React.createElement("path", {
+        d: "M6 6l12 12M18 6L6 18"
+      })), "End")), /*#__PURE__*/React.createElement("div", {
+        style: {
+          textAlign: 'center',
+          fontSize: 11,
+          color: 'var(--fg-3)',
+          marginTop: 8
+        }
+      }, "Everything said here is saved to this chat, so you can switch back to typing any time"))
+    );
   }
 
   /* apply one voice relay event to the message list; live = the turn still growing */
