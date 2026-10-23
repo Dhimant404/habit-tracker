@@ -2460,10 +2460,13 @@ const micWorkletSrc = () => `${makeDownsampler}\n${floatToPcm16}\n` +
   }
   registerProcessor('mic', Mic);`;
 
+const MAX_EARLY_CHUNKS = 375; // 15 s of 40 ms chunks held while the session connects
+
 function useVoice({ onEvent }) {
   const [status, setStatus] = useState('idle'); // idle|connecting|listening|thinking|speaking
   const [error, setError] = useState(null);
   const [muted, setMuted] = useState(false);
+  const [micLive, setMicLive] = useState(false); // mic is capturing (possibly before the session is ready)
   const [startedAt, setStartedAt] = useState(null);
   const res = useRef({});
   const evRef = useRef(onEvent); evRef.current = onEvent;
@@ -2476,7 +2479,7 @@ function useVoice({ onEvent }) {
     if (v.out) v.out.close().catch(() => {});
     if (v.audio) v.audio.srcObject = null;
     if (v.unsub) v.unsub();
-    setStatus('idle'); setError(typeof msg === 'string' ? msg : null); setMuted(false); setStartedAt(null);
+    setStatus('idle'); setError(typeof msg === 'string' ? msg : null); setMuted(false); setStartedAt(null); setMicLive(false);
   }, []);
   // muting disables the mic track: the worklet keeps sending silence, so the socket stays healthy
   const toggleMute = useCallback(() => {
@@ -2499,8 +2502,46 @@ function useVoice({ onEvent }) {
     audio.autoplay = true; audio.setAttribute('playsinline', ''); audio.srcObject = dest.stream; // <audio> route: the path AEC references
     audio.play().catch(() => {});
     const outAn = out.createAnalyser(); outAn.fftSize = 512; outAn.connect(dest); // tap the reply audio for the level bars
-    const v = { mic, out, dest, outAn, audio, srcs: new Set(), next: 0 };
+    const v = { mic, out, dest, outAn, audio, srcs: new Set(), next: 0, queue: [] };
     res.current = v;
+
+    const play = (buf) => {
+      const f = pcm16ToFloat(buf.byteLength % 2 ? buf.slice(0, -1) : buf);
+      if (!f.length) return;
+      const b = out.createBuffer(1, f.length, 24000); // browser resamples to the context rate
+      b.copyToChannel(f, 0);
+      const s = out.createBufferSource(); s.buffer = b; s.connect(v.outAn);
+      const t = Math.max(out.currentTime + 0.02, v.next);
+      s.start(t); v.next = t + b.duration;
+      v.srcs.add(s); s.onended = () => v.srcs.delete(s);
+    };
+    const flush = () => { v.srcs.forEach((s) => { try { s.stop(); } catch (e) { /* not started */ } }); v.srcs.clear(); v.next = 0; };
+
+    // socket and mic start in parallel; mic audio captured before the session is ready waits in v.queue
+    sb.auth.getSession().then(({ data }) => {
+      if (res.current !== v) return;
+      const ws = new WebSocket(AGENT_API.replace(/^http/, 'ws') + '/api/agent/voice');
+      ws.binaryType = 'arraybuffer'; v.ws = ws;
+      ws.onopen = () => ws.send(JSON.stringify({
+        type: 'start', token: data && data.session ? data.session.access_token : '',
+        sessionId: sessionId || null, tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      }));
+      ws.onmessage = (e) => {
+        if (typeof e.data !== 'string') { play(e.data); return; }
+        let m; try { m = JSON.parse(e.data); } catch (err) { return; }
+        if (m.type === 'error') v.err = m.message;
+        if (m.type === 'ready') { v.queue.forEach((c) => ws.send(c)); v.queue = []; v.ready = true; setStatus('listening'); }
+        else if (m.type === 'state') setStatus(m.value);
+        else if (m.type === 'interrupted') flush();
+        if (evRef.current) evRef.current(m);
+      };
+      ws.onclose = (e) => { if (res.current === v) stop(e.code === 4000 ? VOICE_ERR.idle : e.code === 1000 ? null : v.err || VOICE_ERR.drop); };
+      const { data: sub } = sb.auth.onAuthStateChange((event, ses) => {
+        if (event === 'TOKEN_REFRESHED' && ses && ws.readyState === 1) ws.send(JSON.stringify({ type: 'auth', token: ses.access_token }));
+      });
+      v.unsub = () => sub.subscription.unsubscribe();
+    }).catch(() => { if (res.current === v) stop(VOICE_ERR.drop); });
+
     try {
       v.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
     } catch (e) {
@@ -2511,47 +2552,17 @@ function useVoice({ onEvent }) {
     try {
       const url = URL.createObjectURL(new Blob([micWorkletSrc()], { type: 'application/javascript' }));
       try { await mic.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
-      const { data } = await sb.auth.getSession();
       if (res.current !== v) return;
       const node = new AudioWorkletNode(mic, 'mic');
       const mute = mic.createGain(); mute.gain.value = 0; // keeps the graph pulled without echoing the mic
       const src = mic.createMediaStreamSource(v.stream);
       v.micAn = mic.createAnalyser(); v.micAn.fftSize = 512;
       src.connect(node); src.connect(v.micAn); node.connect(mute); mute.connect(mic.destination);
-
-      const play = (buf) => {
-        const f = pcm16ToFloat(buf.byteLength % 2 ? buf.slice(0, -1) : buf);
-        if (!f.length) return;
-        const b = out.createBuffer(1, f.length, 24000); // browser resamples to the context rate
-        b.copyToChannel(f, 0);
-        const s = out.createBufferSource(); s.buffer = b; s.connect(v.outAn);
-        const t = Math.max(out.currentTime + 0.02, v.next);
-        s.start(t); v.next = t + b.duration;
-        v.srcs.add(s); s.onended = () => v.srcs.delete(s);
+      node.port.onmessage = (e) => {
+        if (v.ready && v.ws && v.ws.readyState === 1) v.ws.send(e.data);
+        else if (!v.ready && v.queue.length < MAX_EARLY_CHUNKS) v.queue.push(e.data);
       };
-      const flush = () => { v.srcs.forEach((s) => { try { s.stop(); } catch (e) { /* not started */ } }); v.srcs.clear(); v.next = 0; };
-
-      const ws = new WebSocket(AGENT_API.replace(/^http/, 'ws') + '/api/agent/voice');
-      ws.binaryType = 'arraybuffer'; v.ws = ws;
-      ws.onopen = () => ws.send(JSON.stringify({
-        type: 'start', token: data && data.session ? data.session.access_token : '',
-        sessionId: sessionId || null, tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      }));
-      node.port.onmessage = (e) => { if (v.ready && ws.readyState === 1) ws.send(e.data); };
-      ws.onmessage = (e) => {
-        if (typeof e.data !== 'string') { play(e.data); return; }
-        let m; try { m = JSON.parse(e.data); } catch (err) { return; }
-        if (m.type === 'error') v.err = m.message;
-        if (m.type === 'ready') { v.ready = true; setStatus('listening'); }
-        else if (m.type === 'state') setStatus(m.value);
-        else if (m.type === 'interrupted') flush();
-        if (evRef.current) evRef.current(m);
-      };
-      ws.onclose = (e) => { if (res.current === v) stop(e.code === 4000 ? VOICE_ERR.idle : e.code === 1000 ? null : v.err || VOICE_ERR.drop); };
-      const { data: sub } = sb.auth.onAuthStateChange((event, s) => {
-        if (event === 'TOKEN_REFRESHED' && s && ws.readyState === 1) ws.send(JSON.stringify({ type: 'auth', token: s.access_token }));
-      });
-      v.unsub = () => sub.subscription.unsubscribe();
+      setMicLive(true);
     } catch (e) {
       if (res.current === v) stop(VOICE_ERR.drop);
     }
@@ -2576,7 +2587,7 @@ function useVoice({ onEvent }) {
     return Math.sqrt(sum / b.length);
   }, []);
 
-  return { status, error, muted, startedAt, start, stop, toggleMute, level };
+  return { status, error, muted, micLive, startedAt, start, stop, toggleMute, level };
 }
 
 // PURE-BEGIN
@@ -2881,14 +2892,15 @@ const VOICE_STATE = {
 };
 
 /* the composer's voice form: level bars, state, timer, mute, End */
-function VoiceBar({ status, muted, startedAt, onMute, onEnd, level }) {
+function VoiceBar({ status, muted, micLive, startedAt, onMute, onEnd, level }) {
   const [now, setNow] = useState(Date.now());
   // bars follow the real sound: your mic while listening, the agent's voice while speaking, flat in silence.
   // Direct style writes per frame, no re-renders.
   const barEls = useRef([]);
   useEffect(() => {
     const els = barEls.current;
-    if (!level || (status !== 'listening' && status !== 'speaking')) return undefined;
+    const hearing = status === 'listening' || (status === 'connecting' && micLive);
+    if (!level || !(hearing || status === 'speaking')) return undefined;
     const SHAPE = [0.5, 0.8, 1, 0.75, 0.55];
     let raf = 0, cur = 0;
     const tick = () => {
@@ -2902,16 +2914,18 @@ function VoiceBar({ status, muted, startedAt, onMute, onEnd, level }) {
     };
     raf = requestAnimationFrame(tick);
     return () => { cancelAnimationFrame(raf); els.forEach((e) => { if (e) e.style.transform = ''; }); };
-  }, [status, muted, level]);
+  }, [status, muted, micLive, level]);
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
   const secs = startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;
   const paused = muted && status === 'listening';
-  const [label, hint] = paused ? ['Muted', 'Your mic is off \u2014 tap the mic to unmute'] : (VOICE_STATE[status] || VOICE_STATE.connecting);
+  const [label, hint] = paused ? ['Muted', 'Your mic is off \u2014 tap the mic to unmute']
+    : status === 'connecting' && micLive ? ['Connecting', 'Go ahead and talk \u2014 I\u2019ll catch up in a second']
+    : (VOICE_STATE[status] || VOICE_STATE.connecting);
   return (
     // red until the session is live, then the accent; --teal is re-scoped so bars, label and border all follow
     <div style={{ maxWidth: 720, width: '100%', margin: '0 auto', padding: '8px 24px 0', flex: 'none', boxSizing: 'border-box', ...(status === 'connecting' && { '--teal': '#FF5A5A' }) }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 10px 10px 18px', borderRadius: 28, transition: 'background .3s ease, border-color .3s ease', minHeight: 56, boxSizing: 'border-box', background: 'color-mix(in oklab, var(--teal) 7%, transparent)', border: '1px solid color-mix(in oklab, var(--teal) 38%, transparent)' }}>
-        <div className={'vc-bars ' + (paused ? 'paused' : status)} aria-hidden="true">
+        <div className={'vc-bars ' + (paused ? 'paused' : status === 'connecting' && micLive ? 'listening' : status)} aria-hidden="true">
           {[0, 1, 2, 3, 4].map((i) => <i key={i} ref={(el) => { barEls.current[i] = el; }} />)}
         </div>
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
@@ -3092,7 +3106,7 @@ function AgentView({ mobile, active = true }) {
           </div>
         ) : <ChatThread messages={messages} />}
         {voice.status !== 'idle' ? (
-          <VoiceBar status={voice.status} muted={voice.muted} startedAt={voice.startedAt} onMute={voice.toggleMute} onEnd={() => stopVoice()} level={voice.level} />
+          <VoiceBar status={voice.status} muted={voice.muted} micLive={voice.micLive} startedAt={voice.startedAt} onMute={voice.toggleMute} onEnd={() => stopVoice()} level={voice.level} />
         ) : <Composer onSend={send} onStop={stop} streaming={streaming} mobile={mobile} note={voice.error}
               onTalk={voiceOk ? () => { stop(); voice.start(activeRef.current); } : null} />}
       </div>
